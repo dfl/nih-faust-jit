@@ -436,6 +436,13 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
                             }
                         }
                         (_, NumParamStyle::Menu(vals)) => {
+                            // Sync UI selection with zone value (e.g., after preset load)
+                            let zone_val = **zone;
+                            if vals.options.get(vals.selected).map(|(_, v)| *v) != Some(zone_val) {
+                                if let Some(pos) = vals.options.iter().position(|(_, v)| (*v - zone_val).abs() < 0.001) {
+                                    vals.selected = pos;
+                                }
+                            }
                             egui::ComboBox::from_id_salt(&*label)
                                 .selected_text(vals.options[vals.selected].0.clone())
                                 .show_ui(ui, |ui| {
@@ -446,6 +453,13 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
                             **zone = vals.options[vals.selected].1
                         }
                         (layout, NumParamStyle::Radio(vals)) => {
+                            // Sync UI selection with zone value (e.g., after preset load)
+                            let zone_val = **zone;
+                            if vals.options.get(vals.selected).map(|(_, v)| *v) != Some(zone_val) {
+                                if let Some(pos) = vals.options.iter().position(|(_, v)| (*v - zone_val).abs() < 0.001) {
+                                    vals.selected = pos;
+                                }
+                            }
                             let egui_layout = match layout {
                                 NumParamLayout::VerticalSlider => Layout::top_down(Align::Min),
                                 _ => Layout::left_to_right(Align::Min),
