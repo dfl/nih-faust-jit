@@ -102,6 +102,8 @@ pub struct NumMetadata {
     pub hidden: bool,
     /// A text to show when hovering the widget
     pub tooltip: Option<String>,
+    /// The display order (lower is first)
+    pub order: i32,
 }
 
 #[derive(Debug)]
@@ -131,6 +133,7 @@ pub enum DspWidget<Z> {
         layout: BoxLayout,
         label: String,
         inner: Vec<DspWidget<Z>>,
+        order: i32,
     },
     /// Widgets corresponding to interactive boolean parameters (button and
     /// checkbox in Faust)
@@ -140,6 +143,7 @@ pub enum DspWidget<Z> {
         zone: Z,
         hidden: bool,
         tooltip: Option<String>,
+        order: i32,
     },
     /// Widgets corresponding to interactive numerical floating-point parameters
     /// (hslider, vslider and nentry in Faust), which can take continuous or
@@ -181,6 +185,15 @@ impl<Z> DspWidget<Z> {
             DspWidget::BoolParam { label, .. } => label,
             DspWidget::NumParam { label, .. } => label,
             DspWidget::NumDisplay { label, .. } => label,
+        }
+    }
+
+    pub fn order(&self) -> i32 {
+        match self {
+            DspWidget::Box { order, .. } => *order,
+            DspWidget::BoolParam { order, .. } => *order,
+            DspWidget::NumParam { metadata, .. } => metadata.order,
+            DspWidget::NumDisplay { metadata, .. } => metadata.order,
         }
     }
 }
@@ -244,11 +257,14 @@ enum MetadataElem {
     Hidden(bool),
     Unit(String),
     Tooltip(String),
+    Order(i32),
 }
 
 pub(crate) struct DspWidgetsBuilder {
-    widget_decls: VecDeque<(String, WWidgetDecl)>,
+    widget_decls: VecDeque<(String, WWidgetDecl, Vec<MetadataElem>)>,
     metadata_map: HashMap<*mut f32, Vec<MetadataElem>>,
+    /// Metadata declared for the NEXT widget (usually a box)
+    pending_metadata: Vec<MetadataElem>,
 }
 
 /// A memory zone corresponding to some parameter's current value
@@ -273,6 +289,7 @@ impl DspWidgetsBuilder {
         Self {
             widget_decls: VecDeque::new(),
             metadata_map: HashMap::new(),
+            pending_metadata: Vec::new(),
         }
     }
 
@@ -289,20 +306,21 @@ impl DspWidgetsBuilder {
     fn build_widgets_rec<Z: Zone>(&mut self, cur_level: &mut Vec<DspWidget<Z>>) {
         use MetadataElem as ME;
         use WWidgetDeclType as W;
-        let mut empty_vec = Vec::new();
-        while let Some((label, decl)) = self.widget_decls.pop_front() {
-            // Getting metadata
-            let md_elems = self
-                .metadata_map
-                .get_mut(&decl.zone)
-                .unwrap_or(&mut empty_vec);
+        while let Some((label, decl, mut md_elems)) = self.widget_decls.pop_front() {
+            // Getting metadata from map if it's a param with a zone
+            if let Some(map_md) = self.metadata_map.remove(&decl.zone) {
+                md_elems.extend(map_md);
+            }
+
             let mut style = None;
             let mut metadata = NumMetadata {
                 unit: None,
                 scale: WidgetScale::Lin,
                 hidden: false,
                 tooltip: None,
+                order: 0,
             };
+            let mut order = 0;
             while let Some(elem) = md_elems.pop() {
                 match elem {
                     ME::Style(s) => style = Some(s),
@@ -310,15 +328,23 @@ impl DspWidgetsBuilder {
                     ME::Hidden(h) => metadata.hidden = h,
                     ME::Unit(u) => metadata.unit = Some(u),
                     ME::Tooltip(t) => metadata.tooltip = Some(t),
+                    ME::Order(o) => {
+                        metadata.order = o;
+                        order = o;
+                    }
                 }
             }
 
             let mut widget = match decl.typ {
-                W::CLOSE_BOX => return,
+                W::CLOSE_BOX => {
+                    cur_level.sort_by_key(|w| w.order());
+                    return;
+                }
                 W::TAB_BOX | W::HORIZONTAL_BOX | W::VERTICAL_BOX => DspWidget::Box {
                     layout: BoxLayout::from_decl_type(decl.typ),
                     label,
                     inner: vec![],
+                    order,
                 },
                 W::BUTTON | W::CHECK_BUTTON => DspWidget::BoolParam {
                     layout: BoolParamLayout::from_decl_type(decl.typ),
@@ -326,6 +352,7 @@ impl DspWidgetsBuilder {
                     zone: unsafe { Zone::from_zone_ptr(decl.zone) },
                     hidden: metadata.hidden,
                     tooltip: metadata.tooltip,
+                    order,
                 },
                 W::HORIZONTAL_SLIDER | W::VERTICAL_SLIDER | W::NUM_ENTRY => DspWidget::NumParam {
                     layout: NumParamLayout::from_decl_type(decl.typ),
@@ -360,6 +387,8 @@ impl DspWidgetsBuilder {
             }
             cur_level.push(widget);
         }
+        // After populating current level, sort it by order
+        cur_level.sort_by_key(|w| w.order());
     }
 }
 
@@ -373,18 +402,32 @@ extern "C" fn rs_declare_widget(
 ) {
     let builder = unsafe { (builder_ptr as *mut DspWidgetsBuilder).as_mut() }.unwrap();
     let c_label = unsafe { CStr::from_ptr(label_ptr) };
-    let label = match c_label.to_str() {
+    let mut label = match c_label.to_str() {
         Ok("0x00") => "".to_string(),
         Ok(s) => s.to_string(),
         _ => {
-            // Label couldn't parse to utf8. We just hash the raw CStr to get
-            // some label:
             let mut state = std::hash::DefaultHasher::new();
             c_label.hash(&mut state);
             state.finish().to_string()
         }
     };
-    builder.widget_decls.push_back((label, decl));
+
+    // Extract order metadata from the label
+    // Standard Faust syntax: "[N]paramName" where N is the order number
+    let mut md = builder.pending_metadata.drain(..).collect::<Vec<_>>();
+
+    // Check for leading [N] order prefix (standard Faust syntax)
+    if label.starts_with('[') {
+        if let Some(end) = label.find(']') {
+            let inner = &label[1..end];
+            if let Ok(o) = inner.parse::<i32>() {
+                md.push(MetadataElem::Order(o));
+                label = label[end + 1..].to_string();
+            }
+        }
+    }
+
+    builder.widget_decls.push_back((label, decl, md));
 }
 
 #[no_mangle]
@@ -443,11 +486,15 @@ extern "C" fn rs_declare_metadata(
         _ => None,
     };
     if let Some(elem) = opt_elem {
-        let map = &mut builder.metadata_map;
-        if !map.contains_key(&zone_ptr) {
-            map.insert(zone_ptr, Vec::new());
+        if zone_ptr.is_null() {
+            builder.pending_metadata.push(elem);
+        } else {
+            let map = &mut builder.metadata_map;
+            if !map.contains_key(&zone_ptr) {
+                map.insert(zone_ptr, Vec::new());
+            }
+            map.get_mut(&zone_ptr).unwrap().push(elem);
         }
-        map.get_mut(&zone_ptr).unwrap().push(elem);
     }
 }
 
