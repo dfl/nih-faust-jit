@@ -1,5 +1,9 @@
 #include "wrapper.hpp"
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 #include <faust/dsp/libfaust.h>
 #include <faust/dsp/dsp.h>
 #include <faust/dsp/llvm-dsp.h>
@@ -65,17 +69,23 @@ WDsp *w_createDSPInstance(WFactory *factory, int sample_rate, int nvoices, bool 
         delete mono_dsp;
     }
 
+    WDsp *dsp;
     if (nvoices == 0)
     {
-        // nvoices was set to 0 at call-site OR it was not declared in the
-        // script metadata => we consider the DSP to be a monophonic effect:
-        nvoices = 1;
-        midiControlledVoices = false;
+        // nvoices=0 means this is a monophonic effect that processes audio input.
+        // Use the mono factory directly, NOT the poly instance, because poly
+        // treats process() as a voice generator rather than an audio processor.
+        dsp = new timed_dsp(factory->fProcessFactory->createDSPInstance());
     }
-
+    else
+    {
+        // Polyphonic instrument mode
+        if (nvoices < 1) nvoices = 1;  // Ensure at least 1 voice
+        dsp = new timed_dsp(factory->createPolyDSPInstance(nvoices, midiControlledVoices, group_voices));
+    }
+    
     // timed_dsp is needed for sample-accurate control (such as for MIDI clock).
     // See https://faustdoc.grame.fr/manual/architectures/#sample-accurate-control
-    WDsp *dsp = new timed_dsp(factory->createPolyDSPInstance(nvoices, midiControlledVoices, group_voices));
     dsp->init(sample_rate);
     return dsp;
 }

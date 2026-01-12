@@ -46,7 +46,8 @@
 
           nativeBuildInputs = [ pkg-config ];
 
-          buildInputs = [ alsa-lib libGL xorg.libX11 libjack2 faust ]
+          buildInputs = [ libGL faust ]
+            ++ lib.optionals stdenv.isLinux [ alsa-lib xorg.libX11 libjack2 ]
             ++ lib.optionals stdenv.isDarwin [ libiconv ];
 
           inherit env;

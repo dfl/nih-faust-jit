@@ -3,13 +3,19 @@ xtask = "run --package xtask --release --"
 
 [env]
 # env vars will be set unless they are already present, so these are just
-# defaults:
+# defaults. Uncomment the section for your platform:
+
+# macOS (with faust from homebrew):
+FAUST_LIB = "faust"
+FAUST_LIB_PATH = "/opt/homebrew/lib"
+FAUST_HEADERS_PATH = "/opt/homebrew/include"
+DSP_LIBS_PATH = "/opt/homebrew/share/faust"
 
 # Windows (with faust from default faust installer):
-FAUST_LIB = "static=libfaustwithllvm"
-FAUST_LIB_PATH = "C:/Program Files/Faust/lib"
-FAUST_HEADERS_PATH = "C:/Program Files/Faust/include"
-DSP_LIBS_PATH = "C:/Program Files/Faust/share/faust"
+# FAUST_LIB = "static=libfaustwithllvm"
+# FAUST_LIB_PATH = "C:/Program Files/Faust/lib"
+# FAUST_HEADERS_PATH = "C:/Program Files/Faust/include"
+# DSP_LIBS_PATH = "C:/Program Files/Faust/share/faust"
 
 # Ubuntu (with faust from `faust` package):
 # FAUST_LIB = "faust"
