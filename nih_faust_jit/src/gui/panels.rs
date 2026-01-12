@@ -133,6 +133,16 @@ pub(super) fn top_panel_contents(
             gui_state.cached_presets = gui_state.preset_manager.list_presets(dsp_name);
             gui_state.cached_dsp_name = Some(dsp_name.to_string());
             gui_state.selected_preset = None;
+
+            // Auto-load "Default" preset if it exists
+            if gui_state.cached_presets.contains(&"Default".to_string()) {
+                if let Ok(preset) = gui_state.preset_manager.load_preset(dsp_name, "Default") {
+                    gui_state.selected_preset = Some("Default".to_string());
+                    arcs.preset_loading.store(true, Ordering::SeqCst);
+                    *arcs.faust_param_values.write().unwrap() = preset.values;
+                    async_executor.execute_background(crate::Tasks::ReloadDsp);
+                }
+            }
         }
 
         ui.separator();
@@ -152,42 +162,55 @@ pub(super) fn top_panel_contents(
                         if ui
                             .selectable_label(is_selected, preset_name)
                             .clicked()
+                            && !is_selected
                         {
                             gui_state.selected_preset = Some(preset_name.clone());
+                            // Auto-load the preset when selected
+                            match gui_state.preset_manager.load_preset(dsp_name, preset_name) {
+                                Ok(preset) => {
+                                    arcs.preset_loading.store(true, Ordering::SeqCst);
+                                    *arcs.faust_param_values.write().unwrap() = preset.values;
+                                    async_executor.execute_background(crate::Tasks::ReloadDsp);
+                                }
+                                Err(e) => {
+                                    nih_plug::log::log!(nih_plug::log::Level::Error, "Load preset error: {}", e);
+                                }
+                            }
                         }
                     }
                 });
 
-            if ui
-                .add_enabled(gui_state.selected_preset.is_some(), egui::Button::new("Load"))
-                .clicked()
-            {
-                if let Some(preset_name) = &gui_state.selected_preset {
-                    match gui_state.preset_manager.load_preset(dsp_name, preset_name) {
-                        Ok(preset) => {
-                            arcs.preset_loading.store(true, Ordering::SeqCst);
-                            *arcs.faust_param_values.write().unwrap() = preset.values;
-                            async_executor.execute_background(crate::Tasks::ReloadDsp);
-                        }
-                        Err(e) => {
-                            nih_plug::log::log!(nih_plug::log::Level::Error, "Load preset error: {}", e);
-                        }
-                    }
-                }
+            let delete_btn = ui
+                .add_enabled(gui_state.selected_preset.is_some(), egui::Button::new("Delete"));
+            let popup_id = ui.make_persistent_id("delete-preset-confirm");
+            if delete_btn.clicked() {
+                gui_state.confirm_delete_preset = true;
             }
-
-            if ui
-                .add_enabled(gui_state.selected_preset.is_some(), egui::Button::new("Delete"))
-                .clicked()
-            {
-                if let Some(preset_name) = &gui_state.selected_preset {
-                    if let Err(e) = gui_state.preset_manager.delete_preset(dsp_name, preset_name) {
-                        nih_plug::log::log!(nih_plug::log::Level::Error, "Delete preset error: {}", e);
-                    } else {
-                        gui_state.cached_presets = gui_state.preset_manager.list_presets(dsp_name);
-                        gui_state.selected_preset = None;
-                    }
-                }
+            if gui_state.confirm_delete_preset {
+                egui::Area::new(popup_id)
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(delete_btn.rect.left_bottom())
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.label("Delete this preset?");
+                            ui.horizontal(|ui| {
+                                if ui.button("Yes").clicked() {
+                                    if let Some(preset_name) = &gui_state.selected_preset {
+                                        if let Err(e) = gui_state.preset_manager.delete_preset(dsp_name, preset_name) {
+                                            nih_plug::log::log!(nih_plug::log::Level::Error, "Delete preset error: {}", e);
+                                        } else {
+                                            gui_state.cached_presets = gui_state.preset_manager.list_presets(dsp_name);
+                                            gui_state.selected_preset = None;
+                                        }
+                                    }
+                                    gui_state.confirm_delete_preset = false;
+                                }
+                                if ui.button("No").clicked() {
+                                    gui_state.confirm_delete_preset = false;
+                                }
+                            });
+                        });
+                    });
             }
         });
 
