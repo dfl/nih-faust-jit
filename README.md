@@ -26,53 +26,85 @@ instruments but do not contain a `[nvoices:xxx]` metadata.
 
 ![screenshot](./_misc/screenshot.png)
 
+### Widget Features
+
 - DSP widgets are shown in a two-directional scrollable panel (you can also
   left-click on empty space and drag to pan around)
 - `v`/`h`/`tgroup`s are implemented as foldable containers
-- double-click on any slider's label to reset it to its default value
-- hover a bargraph to see its current value
+- Widget styles: sliders, knobs (286° arc with vertical drag), and LED displays
+- Log/exp scale support for sliders and bargraphs (automatic log scaling for dB units)
+- Meter state machine: bargraphs display green/orange/red colors with clip hold
+- Shift-drag for fine control (0.1x sensitivity)
+- Hover any widget to see its current value in a tooltip
+- Double-click on any slider/knob label to reset it to its default value
+
+### Parameter Management
+
+- Parameters are saved with your DAW project (plugin mode only)
+- Use `[order:N]` metadata in your DSP script to control parameter ordering in the GUI
+- Preset system: save, load, and delete presets per DSP script
+- "Edit DSP" button opens the current DSP file in your system's default editor
+
+### Playback Control (when audio file is loaded)
+
+- Space bar toggles audio playback
 
 ## Building
 
 First install [Rust](https://rustup.rs/) and [Faust](https://faust.grame.fr/downloads/).
 
-For now, Faust paths need to be provided through environment variables at build
-time. The **build time** environment variables are:
+### Quick Start
 
-- `FAUST_LIB`: which `libfaustXXX` to link with. By default it statically links
-  with `libfaustwithllvm` in order to generate a self-contained plugin (which is
-  more convenient if you are on Windows, as else you would need extra setup so
-  the plugin can find Faust and llvm DLLs at runtime). Just set it to `"faust"`
-  if you are on OSX or Linux and want to dynamically link with a regular system
-  installation of Faust and llvm (dynamic linking is cargo's default, and
-  shouldn't be a problem there)
-- `FAUST_LIB_PATH`: where to look for the faust static/dynamic library
-- `FAUST_HEADERS_PATH`: where to look for the Faust C/CPP headers
-- `DSP_LIBS_PATH`: where the plugin should look by default for the [Faust DSP
-  libraries](https://faustlibraries.grame.fr/), so your script can import e.g.
-  `"stdfaust.lib"`. This can then be overriden at runtime with the plugin's GUI
-- `LLVM_CACHE_FOLDER`: where to cache the llvm bytecode of the scripts, for
-  shorter reload times. This variable must be set, but can be an empty string if
-  you do not want to use caching. This folder will be created if it doesn't
-  exist, so you can just delete it to flush the cache. **Caching is based only
-  on the contents of the script itself, not on what it may import**.
+The default configuration in `.cargo/config.toml` is set up for **macOS with Homebrew**. If you've installed Faust via `brew install faust`, you can build immediately:
 
-You can set these env vars via command line, or edit the `.cargo/config.toml`
-before building. You may need to run `cargo clean` after changing them so new
-values are taken into account. Check `.github/workflows/rust.yml` to see e.g.
-how these are overriden for building on Ubuntu.
+```shell
+cargo run --release
+```
 
-Then, you can compile and package the VST3 and CLAP plugins with:
+For other platforms, edit `.cargo/config.toml` and uncomment the appropriate section for your platform (Windows or Ubuntu), then run `cargo clean` before building.
+
+### Environment Variables
+
+Faust paths are configured through environment variables at build time:
+
+- `FAUST_LIB`: which library to link with. Use `"faust"` for dynamic linking (macOS/Linux) or `"static=libfaustwithllvm"` for static linking (Windows)
+- `FAUST_LIB_PATH`: path to the Faust library directory
+- `FAUST_HEADERS_PATH`: path to the Faust C/C++ headers
+- `DSP_LIBS_PATH`: default path to [Faust DSP libraries](https://faustlibraries.grame.fr/) (can be overridden at runtime via GUI)
+- `LLVM_CACHE_FOLDER`: path to cache LLVM bytecode for faster reloads (can be empty to disable)
+
+Platform-specific defaults are provided in `.cargo/config.toml`. After changing these values, run `cargo clean` to ensure they take effect.
+
+### Building Plugins
+
+To compile and package the VST3 and CLAP plugins:
 
 ```shell
 cargo xtask bundle nih_faust_jit --release
 ```
+
+### Running the Standalone
 
 Running the standalone version of the plugin is just:
 
 ```shell
 cargo run --release
 ```
+
+You can optionally provide a path to a Faust DSP script and an audio file for testing via command-line arguments:
+
+```shell
+# Load a specific DSP script on startup
+cargo run --release -- /path/to/my_effect.dsp
+
+# Load both a DSP script and an audio file for testing/playback
+cargo run --release -- /path/to/my_effect.dsp /path/to/test_loop.wav
+
+# Use with other nih-plug flags (e.g. debug mode and setting jack buffer size)
+cargo run --release -- --debug /path/to/my_effect.dsp -p 1024
+```
+
+When a DSP script is provided via the command line, it will override any previously saved session state. If an audio file is provided, it will automatically start playing in a loop upon startup.
 
 On Windows, if you are getting an error like:
 
@@ -86,6 +118,16 @@ you should set the buffer size with:
 ```shell
 cargo run --release -- -p 1056
 ```
+
+### Bluetooth Audio
+
+Bluetooth audio devices don't work unless the sample rate is set to 44.1kHz:
+
+```shell
+cargo run --release -- --sample-rate 44100
+```
+
+You can also set this in the UI under "Audio/MIDI Settings" and save it for future sessions.
 
 ## Installing via the Nix flake
 
@@ -120,17 +162,12 @@ which wraps `nih_faust_jit_standalone` so it can use either the ALSA or Jack bac
   are just summed together. The plugin exposes a Gain parameter to the host.
   Don't forget to use it if your instrument script doesn't perform some volume
   reduction already.
-- Parameters changed via the GUI widgets are not saved in the plugin's state.
-  They will return to the default value they have in the script when the
-  plugin is reloaded.
 - Keyboard input is not supported (you cannot directly type a value in numeric entry).
   This comes from [a bug in baseview](https://github.com/RustAudio/baseview/issues/152).
 
 ## Faust features not yet supported
 
 - Soundfiles
-- Some style (`knob` and `led`) and scale (`exp` for sliders/bargraphs, and
-  `log` for bargraphs) metadata are not taken into account in the GUI
 
 ## Crates
 
