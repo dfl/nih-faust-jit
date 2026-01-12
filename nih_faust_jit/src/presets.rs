@@ -42,7 +42,7 @@ impl PresetManager {
             return Vec::new();
         };
 
-        entries
+        let mut presets: Vec<String> = entries
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
             .filter_map(|e| {
@@ -51,7 +51,9 @@ impl PresetManager {
                     .and_then(|s| s.to_str())
                     .map(|s| s.to_string())
             })
-            .collect()
+            .collect();
+        presets.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        presets
     }
 
     /// Save a preset for a given DSP script

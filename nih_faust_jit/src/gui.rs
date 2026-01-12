@@ -55,6 +55,8 @@ pub(crate) struct GuiState {
     devices_enumerated: bool,
     /// Whether config has been modified (needs restart to apply)
     config_modified: bool,
+    /// Whether delete preset confirmation is showing
+    confirm_delete_preset: bool,
 }
 
 impl Default for GuiState {
@@ -74,6 +76,7 @@ impl Default for GuiState {
             device_config: config::StandaloneConfig::load(),
             devices_enumerated: false,
             config_modified: false,
+            confirm_delete_preset: false,
         }
     }
 }
