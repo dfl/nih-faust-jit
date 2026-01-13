@@ -2,7 +2,7 @@ use nih_plug::prelude::*;
 use nih_plug_egui::egui;
 use std::sync::{atomic::Ordering, Arc};
 
-use crate::{audio_file, config, save_widget_values, DspState, DspType};
+use crate::{audio_file, config, oversampling::OversamplingFactor, save_widget_values, DspState, DspType, Tasks};
 use std::collections::HashMap;
 use super::{GuiArcs, GuiState};
 
@@ -51,6 +51,30 @@ pub(super) fn top_panel_contents(
         }
     });
     *arcs.dsp_nvoices.write().unwrap() = nvoices;
+
+    // Oversampling selector
+    // Read from pending (what user selected) for display, not from actual (what DSP has)
+    let current_os = arcs.pending_oversampling.load(Ordering::Relaxed);
+    let actual_os = arcs.oversampling.load(Ordering::Relaxed);
+    let mut selected_oversampling = OversamplingFactor::from_factor(current_os);
+    let last_oversampling = selected_oversampling;
+    ui.horizontal(|ui| {
+        ui.label("Oversampling:");
+        enum_combobox(ui, "oversampling-combobox", &mut selected_oversampling);
+        // Show loading indicator if pending != actual
+        if current_os != actual_os {
+            ui.label("(loading...)");
+        } else {
+            ui.label("(reduces aliasing in nonlinear effects)");
+        }
+    });
+    if selected_oversampling != last_oversampling {
+        let new_factor = selected_oversampling.factor() as u8;
+        // Store the PENDING oversampling factor - task executor will update the
+        // actual value after DSP reloads to avoid race condition
+        arcs.pending_oversampling.store(new_factor, Ordering::Relaxed);
+        async_executor.execute_background(Tasks::ReloadDsp);
+    }
 
     let selected_paths = arcs.selected_paths.read().unwrap();
 

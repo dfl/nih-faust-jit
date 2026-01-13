@@ -23,6 +23,10 @@ pub(crate) struct GuiArcs {
     pub(crate) preset_loading: Arc<AtomicBool>,
     pub(crate) audio_file_player: Arc<RwLock<audio_file::AudioFilePlayer>>,
     pub(crate) playback_state: Arc<audio_file::PlaybackState>,
+    /// Current oversampling factor (what DSP is actually loaded with)
+    pub(crate) oversampling: Arc<std::sync::atomic::AtomicU8>,
+    /// Pending oversampling factor (what user selected, updated after reload)
+    pub(crate) pending_oversampling: Arc<std::sync::atomic::AtomicU8>,
 }
 
 /// Data owned only by the GUI thread

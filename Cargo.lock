@@ -474,6 +474,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bit_mask_ring_buf"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac85b1322307fc253c24060df1e8b4e8ea681e13d2d02d14f59dbdf9f64b0e13"
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1550,6 +1556,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "halfband"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc54b619059b0eb1c10e92b0ff3776689293b202b783691a99f94f5ff2470440"
+dependencies = [
+ "bit_mask_ring_buf",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2047,6 +2062,7 @@ dependencies = [
  "directories",
  "faust_jit",
  "faust_jit_egui",
+ "halfband",
  "midir 0.10.3",
  "nih_plug",
  "nih_plug_egui",
