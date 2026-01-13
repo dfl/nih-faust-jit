@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc, RwLock,
     },
 };
@@ -27,7 +27,10 @@ macro_rules! debug_log {
 pub mod audio_file;
 pub mod config;
 mod gui;
+pub mod oversampling;
 pub mod presets;
+
+use oversampling::{OversamplingFactor, StereoOversampler};
 
 #[derive(Debug)]
 enum DspState {
@@ -52,6 +55,8 @@ pub struct NihFaustJit {
     debug_mode: bool,
     /// The last known values of parameters (for change logging)
     last_param_values: std::sync::Mutex<HashMap<String, f32>>,
+    /// Stereo oversampler with pre-allocated buffers
+    oversampler: StereoOversampler,
 }
 
 #[derive(Params)]
@@ -74,6 +79,14 @@ struct NihFaustJitParams {
 
     /// Flag to prevent save_widget_values from overwriting preset values during load
     preset_loading: Arc<AtomicBool>,
+
+    /// The oversampling factor that the current DSP was loaded with (1, 2, 4, or 8)
+    /// process() uses this to determine up/downsampling ratio
+    dsp_oversampling_factor: Arc<AtomicU8>,
+
+    /// Pending oversampling factor (what user selected, before DSP reload completes)
+    /// Task executor reads this and updates dsp_oversampling_factor after reload
+    pending_oversampling: Arc<AtomicU8>,
 }
 
 impl NihFaustJit {
@@ -88,6 +101,8 @@ impl NihFaustJit {
             preset_loading: Arc::clone(&self.params.preset_loading),
             audio_file_player: Arc::clone(&self.audio_file_player),
             playback_state: Arc::clone(&self.playback_state),
+            oversampling: Arc::clone(&self.params.dsp_oversampling_factor),
+            pending_oversampling: Arc::clone(&self.params.pending_oversampling),
         }
     }
 }
@@ -203,6 +218,8 @@ impl Default for NihFaustJit {
             playback_state,
             debug_mode: std::env::var("NIH_FAUST_JIT_DEBUG").is_ok(),
             last_param_values: std::sync::Mutex::new(HashMap::new()),
+            // Max 8192 samples per block should cover most hosts
+            oversampler: StereoOversampler::new(8192),
         }
     }
 }
@@ -225,6 +242,9 @@ impl Default for NihFaustJitParams {
             faust_param_values: Arc::new(RwLock::new(HashMap::new())),
 
             preset_loading: Arc::new(AtomicBool::new(false)),
+
+            dsp_oversampling_factor: Arc::new(AtomicU8::new(1)),
+            pending_oversampling: Arc::new(AtomicU8::new(1)),
         }
     }
 }
@@ -296,6 +316,8 @@ impl Plugin for NihFaustJit {
         let dsp_state_arc = Arc::clone(&self.dsp_state);
         let faust_param_values_arc = Arc::clone(&self.params.faust_param_values);
         let preset_loading_arc = Arc::clone(&self.params.preset_loading);
+        let pending_oversampling_arc = Arc::clone(&self.params.pending_oversampling);
+        let dsp_oversampling_arc = Arc::clone(&self.params.dsp_oversampling_factor);
         let audio_file_player_arc = Arc::clone(&self.audio_file_player);
         let playback_state_arc = Arc::clone(&self.playback_state);
 
@@ -337,7 +359,10 @@ impl Plugin for NihFaustJit {
             }
             Tasks::ReloadDsp => {
                 debug_log!("Reloading DSP...");
-                let sample_rate = sample_rate_arc.load(Ordering::Relaxed);
+                let host_sample_rate = sample_rate_arc.load(Ordering::Relaxed);
+                // Read the PENDING oversampling (what user selected)
+                let oversampling_factor = pending_oversampling_arc.load(Ordering::Relaxed) as f32;
+                let dsp_sample_rate = host_sample_rate * oversampling_factor;
                 let selected_paths = selected_paths_arc.read().unwrap();
                 let dsp_nvoices = *dsp_nvoices_arc.read().unwrap();
                 let new_dsp_state = match &selected_paths.dsp_script {
@@ -346,7 +371,7 @@ impl Plugin for NihFaustJit {
                             opt_cache.as_ref(),
                             script_path,
                             &[&selected_paths.dsp_lib_path],
-                            sample_rate as i32,
+                            dsp_sample_rate as i32,
                             &faust_jit::DspLoadMode::from_nvoices(dsp_nvoices),
                         ) {
                             Err(msg) => DspState::Failed(msg),
@@ -372,12 +397,19 @@ impl Plugin for NihFaustJit {
                     None => DspState::NoDspScript,
                 };
                 debug_log!(
-                    "Loaded {:?} with sample_rate={}, nvoices={} => {:?}",
+                    "Loaded {:?} with host_sr={}, oversampling={}x, dsp_sr={}, nvoices={} => {:?}",
                     selected_paths,
-                    sample_rate,
+                    host_sample_rate,
+                    oversampling_factor,
+                    dsp_sample_rate,
                     dsp_nvoices,
                     new_dsp_state
                 );
+                // Only update the actual oversampling factor if DSP loaded successfully
+                // This prevents process() from using wrong oversampling during failed loads
+                if matches!(new_dsp_state, DspState::Loaded(_)) {
+                    dsp_oversampling_arc.store(oversampling_factor as u8, Ordering::Relaxed);
+                }
                 // This is the only place where the whole DSP state is locked in
                 // write mode, and only so we can swap it with the newly loaded
                 // one:
@@ -445,6 +477,9 @@ impl Plugin for NihFaustJit {
             false
         };
 
+        // Get current oversampling factor (may have been changed by GUI)
+        let current_oversampling = self.params.dsp_oversampling_factor.load(Ordering::Relaxed);
+
         let dsp_state_guard = self.dsp_state.read().unwrap();
 
         // Debug: Log when both audio file is playing AND DSP is loaded
@@ -492,34 +527,85 @@ impl Plugin for NihFaustJit {
                 }
             }
 
-            // Processing audio buffers:
-            // Note: For mono DSPs (1 in, 1 out), only buffer[0] is processed
-            
+            // Processing audio buffers with optional oversampling:
+            let oversample_factor = OversamplingFactor::from_factor(current_oversampling);
+            let buf_slice = buffer.as_slice();
+            let num_samples = buf_slice[0].len();
+
             // DEBUG: Log sample values before and after DSP processing
-            let log_samples = count % 100 == 50; // Log different blocks than status logs
+            let log_samples = count % 100 == 50;
             let pre_rms = if log_samples {
-                let buf = buffer.as_slice();
-                let sum: f32 = buf[0].iter().take(64).map(|s| s * s).sum();
+                let sum: f32 = buf_slice[0].iter().take(64).map(|s| s * s).sum();
                 (sum / 64.0).sqrt()
             } else { 0.0 };
             let pre_samples = if log_samples {
-                let buf = buffer.as_slice();
-                format!("{:.4}, {:.4}, {:.4}", buf[0].get(0).unwrap_or(&0.0), buf[0].get(1).unwrap_or(&0.0), buf[0].get(2).unwrap_or(&0.0))
+                format!("{:.4}, {:.4}, {:.4}", buf_slice[0].get(0).unwrap_or(&0.0), buf_slice[0].get(1).unwrap_or(&0.0), buf_slice[0].get(2).unwrap_or(&0.0))
             } else { String::new() };
-            
-            dsp.process_buffers(buffer.as_slice());
-            
+
+            // Check if DSP is mono to optimize oversampling (skip right channel processing)
+            let is_mono_dsp = dsp.info.num_inputs <= 1 && dsp.info.num_outputs <= 1;
+
+            if oversample_factor == OversamplingFactor::X1 {
+                // No oversampling - direct processing
+                dsp.process_buffers(buf_slice);
+            } else {
+                // Oversampling enabled
+                let factor = oversample_factor.factor();
+                let oversampled_len = num_samples * factor;
+
+                // Ensure buffers are large enough
+                self.oversampler.ensure_buffer_size(num_samples);
+
+                // Upsample left channel
+                self.oversampler.left.upsample(
+                    oversample_factor,
+                    buf_slice[0],
+                    &mut self.oversampler.buffer_left[..oversampled_len],
+                );
+
+                // Upsample right channel only for stereo DSPs
+                if !is_mono_dsp && buf_slice.len() >= 2 {
+                    self.oversampler.right.upsample(
+                        oversample_factor,
+                        buf_slice[1],
+                        &mut self.oversampler.buffer_right[..oversampled_len],
+                    );
+                }
+
+                // Process at oversampled rate
+                {
+                    let left_slice = &mut self.oversampler.buffer_left[..oversampled_len];
+                    let right_slice = &mut self.oversampler.buffer_right[..oversampled_len];
+                    let mut oversampled_bufs: [&mut [f32]; 2] = [left_slice, right_slice];
+                    dsp.process_buffers(&mut oversampled_bufs);
+                }
+
+                // Downsample back to original rate
+                self.oversampler.left.downsample(
+                    oversample_factor,
+                    &self.oversampler.buffer_left[..oversampled_len],
+                    buf_slice[0],
+                );
+
+                // Downsample right channel only for stereo DSPs
+                if !is_mono_dsp && buf_slice.len() >= 2 {
+                    self.oversampler.right.downsample(
+                        oversample_factor,
+                        &self.oversampler.buffer_right[..oversampled_len],
+                        buf_slice[1],
+                    );
+                }
+            }
+
             if self.debug_mode && log_samples {
-                let buf = buffer.as_slice();
-                let post_sum: f32 = buf[0].iter().take(64).map(|s| s * s).sum();
+                let post_sum: f32 = buf_slice[0].iter().take(64).map(|s| s * s).sum();
                 let post_rms = (post_sum / 64.0).sqrt();
-                let post_samples = format!("{:.4}, {:.4}, {:.4}", buf[0].get(0).unwrap_or(&0.0), buf[0].get(1).unwrap_or(&0.0), buf[0].get(2).unwrap_or(&0.0));
-                log!(Level::Info, "DSP: pre_rms={:.6}, post_rms={:.6}, pre=[{}], post=[{}]", 
+                let post_samples = format!("{:.4}, {:.4}, {:.4}", buf_slice[0].get(0).unwrap_or(&0.0), buf_slice[0].get(1).unwrap_or(&0.0), buf_slice[0].get(2).unwrap_or(&0.0));
+                log!(Level::Info, "DSP: pre_rms={:.6}, post_rms={:.6}, pre=[{}], post=[{}]",
                     pre_rms, post_rms, pre_samples, post_samples);
             }
             
             // For mono DSPs: copy processed left channel to right channel
-            let is_mono_dsp = dsp.info.num_inputs <= 1 && dsp.info.num_outputs <= 1;
             if is_mono_dsp && buffer.channels() >= 2 {
                 let buf_slice = buffer.as_slice();
                 if buf_slice.len() >= 2 {
