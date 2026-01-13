@@ -550,6 +550,9 @@ impl Plugin for NihFaustJit {
                 format!("{:.4}, {:.4}, {:.4}", buf_slice[0].get(0).unwrap_or(&0.0), buf_slice[0].get(1).unwrap_or(&0.0), buf_slice[0].get(2).unwrap_or(&0.0))
             } else { String::new() };
 
+            // Check if DSP is mono to optimize oversampling (skip right channel processing)
+            let is_mono_dsp = dsp.info.num_inputs <= 1 && dsp.info.num_outputs <= 1;
+
             if oversample_factor == OversamplingFactor::X1 {
                 // No oversampling - direct processing
                 dsp.process_buffers(buf_slice);
@@ -568,16 +571,13 @@ impl Plugin for NihFaustJit {
                     &mut self.oversampler.buffer_left[..oversampled_len],
                 );
 
-                // Upsample right channel (or copy left for mono input)
-                if buf_slice.len() >= 2 {
+                // Upsample right channel only for stereo DSPs
+                if !is_mono_dsp && buf_slice.len() >= 2 {
                     self.oversampler.right.upsample(
                         oversample_factor,
                         buf_slice[1],
                         &mut self.oversampler.buffer_right[..oversampled_len],
                     );
-                } else {
-                    self.oversampler.buffer_right[..oversampled_len]
-                        .copy_from_slice(&self.oversampler.buffer_left[..oversampled_len]);
                 }
 
                 // Process at oversampled rate
@@ -595,7 +595,8 @@ impl Plugin for NihFaustJit {
                     buf_slice[0],
                 );
 
-                if buf_slice.len() >= 2 {
+                // Downsample right channel only for stereo DSPs
+                if !is_mono_dsp && buf_slice.len() >= 2 {
                     self.oversampler.right.downsample(
                         oversample_factor,
                         &self.oversampler.buffer_right[..oversampled_len],
@@ -613,7 +614,6 @@ impl Plugin for NihFaustJit {
             }
             
             // For mono DSPs: copy processed left channel to right channel
-            let is_mono_dsp = dsp.info.num_inputs <= 1 && dsp.info.num_outputs <= 1;
             if is_mono_dsp && buffer.channels() >= 2 {
                 let buf_slice = buffer.as_slice();
                 if buf_slice.len() >= 2 {
