@@ -99,6 +99,7 @@ pub fn show_value_tooltip(
     unit: Option<&str>,
     is_interacting: bool,
     widget_rect: egui::Rect,
+    range: f32,
 ) {
     const HOLD_SECS: f32 = 0.25;
     const FADE_SECS: f32 = 0.25;
@@ -122,9 +123,25 @@ pub fn show_value_tooltip(
     if let Some(a) = alpha {
         ui.ctx().request_repaint();
 
-        let text = match unit {
-            Some(u) => format!("{:.2} {}", state.last_value, u),
-            None => format!("{:.2}", state.last_value),
+        let text = {
+            let v = state.last_value;
+            let decimals = if range <= 1.0 {
+                3
+            } else if range <= 10.0 {
+                2
+            } else {
+                1
+            };
+            match (unit, decimals) {
+                (Some(u), 0) => format!("{:.0} {}", v, u),
+                (Some(u), 1) => format!("{:.1} {}", v, u),
+                (Some(u), 2) => format!("{:.2} {}", v, u),
+                (Some(u), _) => format!("{:.3} {}", v, u),
+                (None, 0) => format!("{:.0}", v),
+                (None, 1) => format!("{:.1}", v),
+                (None, 2) => format!("{:.2}", v),
+                (None, _) => format!("{:.3}", v),
+            }
         };
 
         let tooltip_pos = widget_rect.center_top() - egui::vec2(0.0, 20.0);

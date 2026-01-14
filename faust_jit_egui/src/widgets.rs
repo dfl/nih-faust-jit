@@ -429,6 +429,7 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
                                 unit.as_deref(),
                                 response.dragged() || scrolling,
                                 response.rect,
+                                *max - *min,
                             );
 
                             if let Some(txt) = tooltip {
