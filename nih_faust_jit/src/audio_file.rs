@@ -46,7 +46,13 @@ pub struct PlaybackState {
 
 impl PlaybackState {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            position: AtomicU64::new(0),
+            // Start with playing=true so instruments show visualization immediately
+            // and can be paused to freeze the display
+            playing: AtomicBool::new(true),
+            looping: AtomicBool::new(false),
+        }
     }
 
     pub fn reset(&self) {

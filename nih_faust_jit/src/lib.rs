@@ -29,6 +29,7 @@ pub mod config;
 mod gui;
 pub mod oversampling;
 pub mod presets;
+pub mod testbench;
 
 use oversampling::{OversamplingFactor, StereoOversampler};
 
@@ -57,6 +58,16 @@ pub struct NihFaustJit {
     last_param_values: std::sync::Mutex<HashMap<String, f32>>,
     /// Stereo oversampler with pre-allocated buffers
     oversampler: StereoOversampler,
+    /// Testbench audio producer (for pushing samples from audio thread)
+    testbench_audio: testbench::TestbenchAudio,
+    /// Testbench GUI state (for visualization in GUI thread)
+    testbench_gui: Arc<std::sync::Mutex<testbench::TestbenchGui>>,
+    /// Testbench benchmark metrics (shared, lock-free via atomics)
+    testbench_metrics: testbench::SharedMetrics,
+    /// Test signal generator DSP (separate from main DSP)
+    test_signal_dsp: Arc<RwLock<Option<faust_jit::SingletonDsp>>>,
+    /// Whether test signal injection is enabled
+    test_signal_enabled: Arc<AtomicBool>,
 }
 
 #[derive(Params)]
@@ -103,6 +114,10 @@ impl NihFaustJit {
             playback_state: Arc::clone(&self.playback_state),
             oversampling: Arc::clone(&self.params.dsp_oversampling_factor),
             pending_oversampling: Arc::clone(&self.params.pending_oversampling),
+            testbench_gui: Arc::clone(&self.testbench_gui),
+            testbench_metrics: Arc::clone(&self.testbench_metrics),
+            test_signal_dsp: Arc::clone(&self.test_signal_dsp),
+            test_signal_enabled: Arc::clone(&self.test_signal_enabled),
         }
     }
 }
@@ -208,6 +223,7 @@ fn restore_widget_values(widgets: &mut [DspWidget<&mut f32>], saved: &HashMap<St
 impl Default for NihFaustJit {
     fn default() -> Self {
         let playback_state = Arc::new(audio_file::PlaybackState::new());
+        let (testbench_audio, testbench_gui, testbench_metrics) = testbench::create_testbench();
         Self {
             sample_rate: Arc::new(AtomicF32::new(0.0)),
             params: Arc::new(NihFaustJitParams::default()),
@@ -220,6 +236,11 @@ impl Default for NihFaustJit {
             last_param_values: std::sync::Mutex::new(HashMap::new()),
             // Max 8192 samples per block should cover most hosts
             oversampler: StereoOversampler::new(8192),
+            testbench_audio,
+            testbench_gui: Arc::new(std::sync::Mutex::new(testbench_gui)),
+            testbench_metrics,
+            test_signal_dsp: Arc::new(RwLock::new(None)),
+            test_signal_enabled: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -252,6 +273,8 @@ impl Default for NihFaustJitParams {
 pub enum Tasks {
     ReloadDsp,
     LoadAudioFile(PathBuf),
+    LoadTestSignals,
+    UnloadTestSignals,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, strum_macros::EnumIter)]
@@ -320,6 +343,8 @@ impl Plugin for NihFaustJit {
         let dsp_oversampling_arc = Arc::clone(&self.params.dsp_oversampling_factor);
         let audio_file_player_arc = Arc::clone(&self.audio_file_player);
         let playback_state_arc = Arc::clone(&self.playback_state);
+        let test_signal_dsp_arc = Arc::clone(&self.test_signal_dsp);
+        let test_signal_enabled_arc = Arc::clone(&self.test_signal_enabled);
 
         let cache_folder = env!("LLVM_CACHE_FOLDER"); // Build-time env var
         let opt_cache = if cache_folder.is_empty() {
@@ -417,6 +442,45 @@ impl Plugin for NihFaustJit {
                 // Clear preset loading flag (even on failure, to avoid getting stuck)
                 preset_loading_arc.store(false, Ordering::SeqCst);
             }
+            Tasks::LoadTestSignals => {
+                let sample_rate = sample_rate_arc.load(Ordering::Relaxed);
+                let selected_paths = selected_paths_arc.read().unwrap();
+                let lib_path = selected_paths.dsp_lib_path.clone();
+                drop(selected_paths);
+
+                // Embedded test signals DSP
+                const TEST_SIGNALS_DSP: &str = include_str!("../resources/test_signals.dsp");
+
+                // Write to temp file
+                let temp_path = std::env::temp_dir().join("test_signals.dsp");
+                if let Err(e) = std::fs::write(&temp_path, TEST_SIGNALS_DSP) {
+                    log!(Level::Error, "Failed to write test signals DSP: {}", e);
+                    return;
+                }
+
+                // Load as effect (0 voices)
+                match faust_jit::SingletonDsp::from_file(
+                    opt_cache.as_ref(),
+                    &temp_path,
+                    &[&lib_path],
+                    sample_rate as i32,
+                    &faust_jit::DspLoadMode::Effect,
+                ) {
+                    Ok(dsp) => {
+                        log!(Level::Info, "Loaded test signal generator DSP");
+                        *test_signal_dsp_arc.write().unwrap() = Some(dsp);
+                        test_signal_enabled_arc.store(true, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        log!(Level::Error, "Failed to load test signals DSP: {}", e);
+                    }
+                }
+            }
+            Tasks::UnloadTestSignals => {
+                test_signal_enabled_arc.store(false, Ordering::Relaxed);
+                *test_signal_dsp_arc.write().unwrap() = None;
+                log!(Level::Info, "Unloaded test signal generator");
+            }
         })
     }
 
@@ -506,6 +570,18 @@ impl Plugin for NihFaustJit {
         }
 
         if let DspState::Loaded(dsp) = &*dsp_state_guard {
+            // Inject test signal into buffer if enabled, playing, and main DSP is an effect
+            let main_dsp_is_effect = dsp.info.num_inputs > 0;
+            let is_playing = self.playback_state.playing.load(Ordering::Relaxed);
+            if main_dsp_is_effect && self.test_signal_enabled.load(Ordering::Relaxed) && is_playing {
+                if let Ok(test_dsp_guard) = self.test_signal_dsp.try_read() {
+                    if let Some(test_dsp) = test_dsp_guard.as_ref() {
+                        // Generate test signal into the buffer
+                        test_dsp.process_buffers(buffer.as_slice());
+                    }
+                }
+            }
+
             // Handling transport & clock:
             let tp = process_ctx.transport();
             let opt_clock_data = match (tp.tempo, tp.pos_samples()) {
@@ -529,8 +605,14 @@ impl Plugin for NihFaustJit {
 
             // Processing audio buffers with optional oversampling:
             let oversample_factor = OversamplingFactor::from_factor(current_oversampling);
+            let buffer_samples = buffer.samples();
             let buf_slice = buffer.as_slice();
             let num_samples = buf_slice[0].len();
+
+            // Capture pre-DSP audio for comparison (effects only)
+            if main_dsp_is_effect {
+                self.testbench_audio.push_pre_dsp(buf_slice);
+            }
 
             // DEBUG: Log sample values before and after DSP processing
             let log_samples = count % 100 == 50;
@@ -544,6 +626,9 @@ impl Plugin for NihFaustJit {
 
             // Check if DSP is mono to optimize oversampling (skip right channel processing)
             let is_mono_dsp = dsp.info.num_inputs <= 1 && dsp.info.num_outputs <= 1;
+
+            // Benchmarking: time the DSP processing (includes oversampling)
+            let process_start = std::time::Instant::now();
 
             if oversample_factor == OversamplingFactor::X1 {
                 // No oversampling - direct processing
@@ -597,20 +682,39 @@ impl Plugin for NihFaustJit {
                 }
             }
 
+            let process_duration = process_start.elapsed();
+
+            // Record benchmark metrics (lock-free via atomics)
+            self.testbench_metrics.record_process_time(process_duration.as_nanos() as u64);
+            self.testbench_metrics.buffer_size.store(buffer_samples as u32, Ordering::Relaxed);
+            self.testbench_metrics.sample_rate.store(self.sample_rate.load(Ordering::Relaxed) as u32, Ordering::Relaxed);
+
             if self.debug_mode && log_samples {
                 let post_sum: f32 = buf_slice[0].iter().take(64).map(|s| s * s).sum();
                 let post_rms = (post_sum / 64.0).sqrt();
-                let post_samples = format!("{:.4}, {:.4}, {:.4}", buf_slice[0].get(0).unwrap_or(&0.0), buf_slice[0].get(1).unwrap_or(&0.0), buf_slice[0].get(2).unwrap_or(&0.0));
-                log!(Level::Info, "DSP: pre_rms={:.6}, post_rms={:.6}, pre=[{}], post=[{}]",
-                    pre_rms, post_rms, pre_samples, post_samples);
+                // Only log when there's actual signal
+                if pre_rms > 0.0 || post_rms > 0.0 {
+                    let post_samples = format!("{:.4}, {:.4}, {:.4}", buf_slice[0].get(0).unwrap_or(&0.0), buf_slice[0].get(1).unwrap_or(&0.0), buf_slice[0].get(2).unwrap_or(&0.0));
+                    log!(Level::Info, "DSP: pre_rms={:.6}, post_rms={:.6}, pre=[{}], post=[{}]",
+                        pre_rms, post_rms, pre_samples, post_samples);
+                }
             }
-            
+
             // For mono DSPs: copy processed left channel to right channel
             if is_mono_dsp && buffer.channels() >= 2 {
                 let buf_slice = buffer.as_slice();
                 if buf_slice.len() >= 2 {
                     for i in 0..buf_slice[0].len() {
                         buf_slice[1][i] = buf_slice[0][i];
+                    }
+                }
+            }
+
+            // Mute instruments when paused (effects already have no input when paused)
+            if !main_dsp_is_effect && !is_playing {
+                for channel in buffer.as_slice() {
+                    for sample in channel.iter_mut() {
+                        *sample = 0.0;
                     }
                 }
             }
@@ -623,6 +727,10 @@ impl Plugin for NihFaustJit {
                 *sample *= gain;
             }
         }
+
+        // Push final output to visualization buffers
+        self.testbench_audio.push_from_buffer(buffer.as_slice());
+
         ProcessStatus::Normal
     }
 }
