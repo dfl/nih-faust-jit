@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use crate::{audio_file, config, presets::PresetManager, save_widget_values, DspState};
+use crate::{audio_file, config, presets::PresetManager, save_widget_values, testbench, DspState};
 
 /// Data shared between the plugin and the GUI thread
 pub(crate) struct GuiArcs {
@@ -27,6 +27,10 @@ pub(crate) struct GuiArcs {
     pub(crate) oversampling: Arc<std::sync::atomic::AtomicU8>,
     /// Pending oversampling factor (what user selected, updated after reload)
     pub(crate) pending_oversampling: Arc<std::sync::atomic::AtomicU8>,
+    pub(crate) testbench_gui: Arc<std::sync::Mutex<testbench::TestbenchGui>>,
+    pub(crate) testbench_metrics: testbench::SharedMetrics,
+    pub(crate) test_signal_dsp: Arc<RwLock<Option<faust_jit::SingletonDsp>>>,
+    pub(crate) test_signal_enabled: Arc<AtomicBool>,
 }
 
 /// Data owned only by the GUI thread

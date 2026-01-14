@@ -45,3 +45,9 @@ midir = "0.10"
 
 # Signal handling (standalone)
 ctrlc = "3"
+
+# Testbench visualizations
+egui_plot = "0.31"
+realfft = "3"
+ringbuf = "0.4"
+cortix = "0.1"
