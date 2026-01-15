@@ -27,6 +27,11 @@ fn main() {
     }
     
     while let Some(arg) = it.next() {
+        if arg == "standalone" {
+            filtered_args.push(arg);
+            continue;
+        }
+
         if arg == "--debug" {
             std::env::set_var("NIH_FAUST_JIT_DEBUG", "1");
             continue;
@@ -89,9 +94,12 @@ fn main() {
 
     // Add MIDI input if configured
     if !has_midi {
-        if let Some(device) = &cfg.midi_input {
+        let midi = cfg.midi_input.or_else(|| {
+            config::enumerate_midi_inputs().get(0).cloned()
+        });
+        if let Some(device) = midi {
             args.push("--midi-input".to_string());
-            args.push(device.clone());
+            args.push(device);
         }
     }
 

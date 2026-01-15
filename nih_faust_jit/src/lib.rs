@@ -54,8 +54,6 @@ pub struct NihFaustJit {
     audio_file_player: Arc<RwLock<audio_file::AudioFilePlayer>>,
     playback_state: Arc<audio_file::PlaybackState>,
     debug_mode: bool,
-    /// The last known values of parameters (for change logging)
-    last_param_values: std::sync::Mutex<HashMap<String, f32>>,
     /// Stereo oversampler with pre-allocated buffers
     oversampler: StereoOversampler,
     /// Testbench audio producer (for pushing samples from audio thread)
@@ -70,6 +68,10 @@ pub struct NihFaustJit {
     test_signal_enabled: Arc<AtomicBool>,
     /// Whether running in standalone mode (vs plugin in DAW)
     is_standalone: Arc<AtomicBool>,
+    /// GUI MIDI keyboard sender (GUI thread sends MIDI messages)
+    gui_midi_tx: crossbeam::channel::Sender<[u8; 3]>,
+    /// GUI MIDI keyboard receiver (audio thread receives MIDI messages)
+    gui_midi_rx: crossbeam::channel::Receiver<[u8; 3]>,
 }
 
 #[derive(Params)]
@@ -120,7 +122,7 @@ impl NihFaustJit {
             testbench_metrics: Arc::clone(&self.testbench_metrics),
             test_signal_dsp: Arc::clone(&self.test_signal_dsp),
             test_signal_enabled: Arc::clone(&self.test_signal_enabled),
-            is_standalone: Arc::clone(&self.is_standalone),
+            gui_midi_tx: self.gui_midi_tx.clone(),
         }
     }
 }
@@ -227,6 +229,8 @@ impl Default for NihFaustJit {
     fn default() -> Self {
         let playback_state = Arc::new(audio_file::PlaybackState::new());
         let (testbench_audio, testbench_gui, testbench_metrics) = testbench::create_testbench();
+        // Bounded channel for GUI MIDI keyboard (capacity 64 should be plenty)
+        let (gui_midi_tx, gui_midi_rx) = crossbeam::channel::bounded(64);
         Self {
             sample_rate: Arc::new(AtomicF32::new(0.0)),
             params: Arc::new(NihFaustJitParams::default()),
@@ -236,7 +240,6 @@ impl Default for NihFaustJit {
             ))),
             playback_state,
             debug_mode: std::env::var("NIH_FAUST_JIT_DEBUG").is_ok(),
-            last_param_values: std::sync::Mutex::new(HashMap::new()),
             // Max 8192 samples per block should cover most hosts
             oversampler: StereoOversampler::new(8192),
             testbench_audio,
@@ -245,6 +248,8 @@ impl Default for NihFaustJit {
             test_signal_dsp: Arc::new(RwLock::new(None)),
             test_signal_enabled: Arc::new(AtomicBool::new(false)),
             is_standalone: Arc::new(AtomicBool::new(false)),
+            gui_midi_tx: gui_midi_tx,
+            gui_midi_rx,
         }
     }
 }
@@ -262,7 +267,7 @@ impl Default for NihFaustJitParams {
                 dsp_lib_path: env!("DSP_LIBS_PATH").into(),
             })),
 
-            dsp_nvoices: Arc::new(RwLock::new(0)),  // Default to Effect mode
+            dsp_nvoices: Arc::new(RwLock::new(-1)),  // Default to 'Auto' (polyphony from metadata)
 
             faust_param_values: Arc::new(RwLock::new(HashMap::new())),
 
@@ -561,23 +566,8 @@ impl Plugin for NihFaustJit {
         let count = PROCESS_COUNT.fetch_add(1, Ordering::Relaxed);
 
         // Log every ~1 second (assuming 44100 Hz, 512 sample blocks = ~86 blocks/sec)
-        if self.debug_mode {
-            let params = self.params.faust_param_values.read().unwrap();
-            let mut last_values = self.last_param_values.lock().unwrap();
+        // (Removed allocation-heavy parameter change logging that was causing crashes in standalone mode)
 
-            let mut changes = Vec::new();
-            for (path, &val) in params.iter() {
-                let prev = last_values.get(path).copied().unwrap_or(f32::NAN);
-                if (val - prev).abs() > 0.0001 {
-                    changes.push(format!("{}={:.4}", path, val));
-                    last_values.insert(path.clone(), val);
-                }
-            }
-
-            if !changes.is_empty() {
-                log!(Level::Info, "PARAM CHANGES: {}", changes.join(", "));
-            }
-        }
 
         if let DspState::Loaded(dsp) = &*dsp_state_guard {
             // Inject test signal into buffer if enabled, playing, and main DSP is an effect
@@ -602,7 +592,11 @@ impl Plugin for NihFaustJit {
                 }),
                 _ => None,
             };
-            dsp.handle_midi_sync(tp.playing, &opt_clock_data);
+
+            // Note: playback_state.playing is now user-controlled via GUI (space bar, play/pause button)
+            // We don't sync from host transport since in standalone mode the user controls playback
+            let is_playing = self.playback_state.playing.load(Ordering::Relaxed);
+            dsp.handle_midi_sync(is_playing, &opt_clock_data);
 
             // Handling MIDI events:
             while let Some(midi_event) = process_ctx.next_event() {
@@ -611,6 +605,11 @@ impl Plugin for NihFaustJit {
                     None | Some(MidiResult::SysEx(_, _)) => { /* We ignore SysEx messages */ }
                     Some(MidiResult::Basic(bytes)) => dsp.handle_raw_midi(time, bytes),
                 }
+            }
+
+            // Handle GUI MIDI keyboard events (drain the channel)
+            while let Ok(midi_bytes) = self.gui_midi_rx.try_recv() {
+                dsp.handle_raw_midi(0.0, midi_bytes);
             }
 
             // Processing audio buffers with optional oversampling:
@@ -630,7 +629,7 @@ impl Plugin for NihFaustJit {
                 let sum: f32 = buf_slice[0].iter().take(64).map(|s| s * s).sum();
                 (sum / 64.0).sqrt()
             } else { 0.0 };
-            let pre_samples = if log_samples {
+            let _pre_samples = if log_samples {
                 format!("{:.4}, {:.4}, {:.4}", buf_slice[0].get(0).unwrap_or(&0.0), buf_slice[0].get(1).unwrap_or(&0.0), buf_slice[0].get(2).unwrap_or(&0.0))
             } else { String::new() };
 
@@ -704,9 +703,8 @@ impl Plugin for NihFaustJit {
                 let post_rms = (post_sum / 64.0).sqrt();
                 // Only log when there's actual signal
                 if pre_rms > 0.0 || post_rms > 0.0 {
-                    let post_samples = format!("{:.4}, {:.4}, {:.4}", buf_slice[0].get(0).unwrap_or(&0.0), buf_slice[0].get(1).unwrap_or(&0.0), buf_slice[0].get(2).unwrap_or(&0.0));
-                    log!(Level::Info, "DSP: pre_rms={:.6}, post_rms={:.6}, pre=[{}], post=[{}]",
-                        pre_rms, post_rms, pre_samples, post_samples);
+                    // (Allocation-free logging only)
+                    eprintln!("DSP: block={}, pre_rms={:.6}, post_rms={:.6}", count, pre_rms, post_rms);
                 }
             }
 
@@ -728,6 +726,7 @@ impl Plugin for NihFaustJit {
                     }
                 }
             }
+
         }
         // Applying Gain parameter:
         for channel_samples in buffer.iter_samples() {

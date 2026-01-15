@@ -12,7 +12,8 @@ struct dsp;
 typedef dsp_poly_factory WFactory;
 typedef dsp WDsp;
 
-WFactory *w_createDSPFactoryFromFile(const char *filepath, const int argc, const char *argv[], char *err_msg_c);
+WFactory *w_createDSPFactoryFromFile(const char *filepath, const int argc,
+                                     const char *argv[], char *err_msg_c);
 
 void w_writeFactoryToFolder(WFactory *factory, const char *folder);
 
@@ -37,15 +38,15 @@ void w_deleteDSPFactory(WFactory *factory);
 //   sent. This is _not_ an intended feature of the plugin, just a consequence
 //   of how Faust handles polyphony.
 //
-WDsp *w_createDSPInstance(WFactory *factory, int sample_rate, int nvoices, bool group_voices);
+WDsp *w_createDSPInstance(WFactory *factory, int sample_rate, int nvoices,
+                          bool group_voices);
 
 /* Information about the currently loaded DSP
  */
-struct DspInfo
-{
-    int sample_rate;
-    int num_inputs;
-    int num_outputs;
+struct DspInfo {
+  int sample_rate;
+  int num_inputs;
+  int num_outputs;
 };
 
 DspInfo w_getDSPInfo(WDsp *dsp);
@@ -54,31 +55,29 @@ void w_computeDSP(WDsp *dsp, int count, float **buf);
 
 void w_deleteDSPInstance(WDsp *dsp);
 
-enum WWidgetDeclType
-{
-    TAB_BOX = 0,
-    HORIZONTAL_BOX,
-    VERTICAL_BOX,
-    CLOSE_BOX,
-    BUTTON,
-    CHECK_BUTTON,
-    HORIZONTAL_SLIDER,
-    VERTICAL_SLIDER,
-    NUM_ENTRY,
-    HORIZONTAL_BARGRAPH,
-    VERTICAL_BARGRAPH,
+enum WWidgetDeclType {
+  TAB_BOX = 0,
+  HORIZONTAL_BOX,
+  VERTICAL_BOX,
+  CLOSE_BOX,
+  BUTTON,
+  CHECK_BUTTON,
+  HORIZONTAL_SLIDER,
+  VERTICAL_SLIDER,
+  NUM_ENTRY,
+  HORIZONTAL_BARGRAPH,
+  VERTICAL_BARGRAPH,
 };
 
 // The label is not part of WWidgetDecl because it may not outlive a call to a
 // WWidgetDeclCallback
-struct WWidgetDecl
-{
-    WWidgetDeclType typ;
-    float *zone;
-    float init;
-    float min;
-    float max;
-    float step;
+struct WWidgetDecl {
+  WWidgetDeclType typ;
+  float *zone;
+  float init;
+  float min;
+  float max;
+  float step;
 };
 
 struct WUIs;
@@ -89,17 +88,17 @@ void w_deleteUIs(WUIs *h);
 
 void w_updateAllGuis();
 
-void w_handleRawMidi(WUIs *h, double time, const unsigned char bytes[3]);
+void w_handleRawMidi(WDsp *dsp, WUIs *h, double time,
+                     const unsigned char bytes[3]);
 
 // Taken from Faust
-enum WMidiSyncMsg
-{
-    MIDI_CLOCK = 0xF8,
-    MIDI_START = 0xFA,
-    MIDI_CONT = 0xFB,
-    MIDI_STOP = 0xFC,
+enum WMidiSyncMsg {
+  MIDI_CLOCK = 0xF8,
+  MIDI_START = 0xFA,
+  MIDI_CONT = 0xFB,
+  MIDI_STOP = 0xFC,
 };
 
-void w_handleMidiSync(WUIs *h, double time, WMidiSyncMsg status);
+void w_handleMidiSync(WDsp *dsp, WUIs *h, double time, WMidiSyncMsg status);
 
 #endif

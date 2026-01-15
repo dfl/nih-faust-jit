@@ -32,6 +32,8 @@ pub(crate) struct GuiArcs {
     pub(crate) test_signal_dsp: Arc<RwLock<Option<faust_jit::SingletonDsp>>>,
     pub(crate) test_signal_enabled: Arc<AtomicBool>,
     pub(crate) is_standalone: Arc<AtomicBool>,
+    /// GUI MIDI keyboard sender (for on-screen keyboard)
+    pub(crate) gui_midi_tx: crossbeam::channel::Sender<[u8; 3]>,
 }
 
 /// Data owned only by the GUI thread
@@ -66,6 +68,12 @@ pub(crate) struct GuiState {
     config_modified: bool,
     /// Whether delete preset confirmation is showing
     confirm_delete_preset: bool,
+    /// Current octave for on-screen MIDI keyboard (0-8, middle C = 4)
+    pub keyboard_octave: i32,
+    /// Currently pressed note via mouse click on piano (for handling mouse leave)
+    pub mouse_pressed_note: Option<u8>,
+    /// Currently pressed notes via computer keyboard (can have multiple)
+    pub keyboard_pressed_notes: std::collections::HashSet<u8>,
 }
 
 impl Default for GuiState {
@@ -86,6 +94,9 @@ impl Default for GuiState {
             devices_enumerated: false,
             config_modified: false,
             confirm_delete_preset: false,
+            keyboard_octave: 4,
+            mouse_pressed_note: None,
+            keyboard_pressed_notes: std::collections::HashSet::new(),
         }
     }
 }
@@ -100,10 +111,10 @@ pub(crate) fn create_gui(
         |_, _| {},
         move |egui_ctx, _param_setter, gui_state| {
             if arcs.nih_egui_state.is_open() {
-                // Handle space bar for play/pause toggle
+                // Handle space bar for pause/play toggle
                 if egui_ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-                    let playing = arcs.playback_state.playing.load(Ordering::Relaxed);
-                    arcs.playback_state.playing.store(!playing, Ordering::Relaxed);
+                    let current = arcs.playback_state.playing.load(Ordering::Relaxed);
+                    arcs.playback_state.playing.store(!current, Ordering::Relaxed);
                 }
 
                 // Handle CMD-R (macOS) or CTRL-R (other platforms) for DSP reload
@@ -117,6 +128,42 @@ pub(crate) fn create_gui(
                 // Check for pending file dialog results
                 check_pending_dialogs(&arcs, &async_executor, gui_state);
 
+                // Handle computer keyboard for MIDI notes (Z-M = white keys, S-K = black keys)
+                // Pattern: Z=C, S=C#, X=D, D=D#, C=E, V=F, G=F#, B=G, H=G#, N=A, J=A#, M=B
+                let keyboard_map = [
+                    (egui::Key::Z, 0u8),   // C
+                    (egui::Key::S, 1),     // C#
+                    (egui::Key::X, 2),     // D
+                    (egui::Key::D, 3),     // D#
+                    (egui::Key::C, 4),     // E
+                    (egui::Key::V, 5),     // F
+                    (egui::Key::G, 6),     // F#
+                    (egui::Key::B, 7),     // G
+                    (egui::Key::H, 8),     // G#
+                    (egui::Key::N, 9),     // A
+                    (egui::Key::J, 10),    // A#
+                    (egui::Key::M, 11),    // B
+                ];
+                
+                for (key, semitone) in keyboard_map {
+                    let note = gui_state.keyboard_octave as u8 * 12 + semitone;
+                    if note <= 127 {
+                        let pressed = egui_ctx.input(|i| i.key_pressed(key));
+                        let released = egui_ctx.input(|i| i.key_released(key));
+
+                        if pressed && !gui_state.keyboard_pressed_notes.contains(&note) {
+                            // Note On - only if not already pressed
+                            let _ = arcs.gui_midi_tx.try_send([0x90, note, 100]);
+                            gui_state.keyboard_pressed_notes.insert(note);
+                        }
+                        if released && gui_state.keyboard_pressed_notes.contains(&note) {
+                            // Note Off - only if we sent Note On for this note
+                            let _ = arcs.gui_midi_tx.try_send([0x80, note, 0]);
+                            gui_state.keyboard_pressed_notes.remove(&note);
+                        }
+                    }
+                }
+
                 // Top panel (DSP settings, loading):
                 egui::TopBottomPanel::top("DSP loading")
                     .frame(egui::Frame::default().inner_margin(8.0))
@@ -126,6 +173,15 @@ pub(crate) fn create_gui(
 
                 // Central panel (plugin's GUI):
                 egui::CentralPanel::default().show(egui_ctx, |ui| {
+                    // Show MIDI keyboard for instruments (DSPs with no inputs)
+                    // We place it here so it's below the top panel (oscilloscope) but doesn't scroll with knobs
+                    if let DspState::Loaded(dsp) = &*arcs.dsp_state.read().unwrap() {
+                        if dsp.info.num_inputs == 0 {
+                            panels::midi_keyboard_panel(ui, &arcs, gui_state);
+                            ui.separator();
+                        }
+                    }
+
                     egui::ScrollArea::both()
                         .auto_shrink([false, false])
                         .scroll_bar_visibility(
@@ -139,6 +195,8 @@ pub(crate) fn create_gui(
                                 ui.colored_label(egui::Color32::LIGHT_RED, faust_err_msg);
                             }
                             DspState::Loaded(dsp) => {
+                                // Main DSP widgets
+
                                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                                 let margin = egui::Margin {
                                     left: 0,
