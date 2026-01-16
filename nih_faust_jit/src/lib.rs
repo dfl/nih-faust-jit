@@ -122,6 +122,7 @@ impl NihFaustJit {
             testbench_metrics: Arc::clone(&self.testbench_metrics),
             test_signal_dsp: Arc::clone(&self.test_signal_dsp),
             test_signal_enabled: Arc::clone(&self.test_signal_enabled),
+            is_standalone: Arc::clone(&self.is_standalone),
             gui_midi_tx: self.gui_midi_tx.clone(),
         }
     }

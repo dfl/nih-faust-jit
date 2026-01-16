@@ -173,10 +173,10 @@ pub(crate) fn create_gui(
 
                 // Central panel (plugin's GUI):
                 egui::CentralPanel::default().show(egui_ctx, |ui| {
-                    // Show MIDI keyboard for instruments (DSPs with no inputs)
+                    // Show MIDI keyboard for instruments (DSPs with no inputs) in standalone mode
                     // We place it here so it's below the top panel (oscilloscope) but doesn't scroll with knobs
                     if let DspState::Loaded(dsp) = &*arcs.dsp_state.read().unwrap() {
-                        if dsp.info.num_inputs == 0 {
+                        if dsp.info.num_inputs == 0 && arcs.is_standalone.load(Ordering::Relaxed) {
                             panels::midi_keyboard_panel(ui, &arcs, gui_state);
                             ui.separator();
                         }
