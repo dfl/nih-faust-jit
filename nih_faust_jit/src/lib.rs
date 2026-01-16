@@ -68,6 +68,8 @@ pub struct NihFaustJit {
     test_signal_dsp: Arc<RwLock<Option<faust_jit::SingletonDsp>>>,
     /// Whether test signal injection is enabled
     test_signal_enabled: Arc<AtomicBool>,
+    /// Whether running in standalone mode (vs plugin in DAW)
+    is_standalone: Arc<AtomicBool>,
 }
 
 #[derive(Params)]
@@ -118,6 +120,7 @@ impl NihFaustJit {
             testbench_metrics: Arc::clone(&self.testbench_metrics),
             test_signal_dsp: Arc::clone(&self.test_signal_dsp),
             test_signal_enabled: Arc::clone(&self.test_signal_enabled),
+            is_standalone: Arc::clone(&self.is_standalone),
         }
     }
 }
@@ -241,6 +244,7 @@ impl Default for NihFaustJit {
             testbench_metrics,
             test_signal_dsp: Arc::new(RwLock::new(None)),
             test_signal_enabled: Arc::new(AtomicBool::new(false)),
+            is_standalone: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -495,6 +499,12 @@ impl Plugin for NihFaustJit {
         // function if you do not need it.
         self.sample_rate
             .store(buffer_config.sample_rate, Ordering::Relaxed);
+
+        // Detect if running in standalone mode
+        self.is_standalone.store(
+            matches!(init_ctx.plugin_api(), PluginApi::Standalone),
+            Ordering::Relaxed,
+        );
 
         // Override DSP script if provided via command line
         if let Ok(dsp_path) = std::env::var("NIH_FAUST_JIT_DSP_SCRIPT") {

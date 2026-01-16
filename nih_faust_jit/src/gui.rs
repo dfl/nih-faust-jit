@@ -31,6 +31,7 @@ pub(crate) struct GuiArcs {
     pub(crate) testbench_metrics: testbench::SharedMetrics,
     pub(crate) test_signal_dsp: Arc<RwLock<Option<faust_jit::SingletonDsp>>>,
     pub(crate) test_signal_enabled: Arc<AtomicBool>,
+    pub(crate) is_standalone: Arc<AtomicBool>,
 }
 
 /// Data owned only by the GUI thread

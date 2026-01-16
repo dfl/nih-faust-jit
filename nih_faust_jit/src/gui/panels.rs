@@ -33,8 +33,10 @@ pub(super) fn top_panel_contents(
     // Presets section
     presets_panel(ui, arcs, async_executor, gui_state);
 
-    // Test Input section
-    test_input_panel(ui, arcs, async_executor, gui_state);
+    // Test Input section (standalone mode only - in DAW, use DAW's audio routing)
+    if arcs.is_standalone.load(Ordering::Relaxed) {
+        test_input_panel(ui, arcs, async_executor, gui_state);
+    }
 
     // Testbench section
     testbench_panel(ui, arcs);
