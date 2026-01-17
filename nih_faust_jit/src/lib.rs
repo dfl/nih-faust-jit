@@ -132,21 +132,32 @@ impl NihFaustJit {
 // Parameter Persistence Helpers
 // ============================================================================
 
+/// Build widget path, skipping empty labels to avoid paths like "Razor//Drive"
+fn build_widget_path(path: &str, label: &str) -> String {
+    if label.is_empty() {
+        path.to_string()
+    } else if path.is_empty() {
+        label.to_string()
+    } else {
+        format!("{}/{}", path, label)
+    }
+}
+
 /// Recursively save widget values to a HashMap
 pub(crate) fn save_widget_values<Z: Zone>(widgets: &[DspWidget<Z>], storage: &mut HashMap<String, f32>, path: &str) {
     for widget in widgets {
-        let widget_path = if path.is_empty() {
-            widget.label().to_string()
-        } else {
-            format!("{}/{}", path, widget.label())
-        };
+        let widget_path = build_widget_path(path, widget.label());
 
         match widget {
             DspWidget::NumParam { zone, .. } => {
-                storage.insert(widget_path, zone.cur_value());
+                if !widget_path.is_empty() {
+                    storage.insert(widget_path, zone.cur_value());
+                }
             }
             DspWidget::BoolParam { zone, .. } => {
-                storage.insert(widget_path, zone.cur_value());
+                if !widget_path.is_empty() {
+                    storage.insert(widget_path, zone.cur_value());
+                }
             }
             DspWidget::Box { inner, .. } => {
                 save_widget_values(inner, storage, &widget_path);
@@ -165,11 +176,7 @@ pub(crate) fn log_param_changes<Z: Zone>(widgets: &[DspWidget<Z>], old_values: &
         return;
     }
     for widget in widgets {
-        let widget_path = if path.is_empty() {
-            widget.label().to_string()
-        } else {
-            format!("{}/{}", path, widget.label())
-        };
+        let widget_path = build_widget_path(path, widget.label());
 
         match widget {
             DspWidget::NumParam { zone, .. } => {
@@ -199,11 +206,7 @@ pub(crate) fn log_param_changes<Z: Zone>(widgets: &[DspWidget<Z>], old_values: &
 /// Recursively restore widget values from a HashMap
 fn restore_widget_values(widgets: &mut [DspWidget<&mut f32>], saved: &HashMap<String, f32>, path: &str) {
     for widget in widgets {
-        let widget_path = if path.is_empty() {
-            widget.label().to_string()
-        } else {
-            format!("{}/{}", path, widget.label())
-        };
+        let widget_path = build_widget_path(path, widget.label());
 
         match widget {
             DspWidget::NumParam { zone, min, max, .. } => {
