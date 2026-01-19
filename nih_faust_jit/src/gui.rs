@@ -100,18 +100,21 @@ pub(crate) fn create_gui(
         |_, _| {},
         move |egui_ctx, _param_setter, gui_state| {
             if arcs.nih_egui_state.is_open() {
-                // Handle space bar for play/pause toggle
-                if egui_ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-                    let playing = arcs.playback_state.playing.load(Ordering::Relaxed);
-                    arcs.playback_state.playing.store(!playing, Ordering::Relaxed);
-                }
+                // Only handle keyboard shortcuts when no text input is focused
+                if !egui_ctx.wants_keyboard_input() {
+                    // Handle space bar for play/pause toggle
+                    if egui_ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+                        let playing = arcs.playback_state.playing.load(Ordering::Relaxed);
+                        arcs.playback_state.playing.store(!playing, Ordering::Relaxed);
+                    }
 
-                // Handle CMD-R (macOS) or CTRL-R (other platforms) for DSP reload
-                let reload_shortcut = egui_ctx.input(|i| {
-                    i.key_pressed(egui::Key::R) && (i.modifiers.command || i.modifiers.ctrl)
-                });
-                if reload_shortcut && arcs.selected_paths.read().unwrap().dsp_script.is_some() {
-                    async_executor.execute_background(crate::Tasks::ReloadDsp);
+                    // Handle CMD-R (macOS) or CTRL-R (other platforms) for DSP reload
+                    let reload_shortcut = egui_ctx.input(|i| {
+                        i.key_pressed(egui::Key::R) && (i.modifiers.command || i.modifiers.ctrl)
+                    });
+                    if reload_shortcut && arcs.selected_paths.read().unwrap().dsp_script.is_some() {
+                        async_executor.execute_background(crate::Tasks::ReloadDsp);
+                    }
                 }
 
                 // Check for pending file dialog results
