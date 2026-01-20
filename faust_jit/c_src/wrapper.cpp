@@ -1,9 +1,5 @@
 #include "wrapper.hpp"
 
-#ifdef __APPLE__
-#include <TargetConditionals.h>
-#endif
-
 #include <faust/dsp/libfaust.h>
 #include <faust/dsp/dsp.h>
 #include <faust/dsp/llvm-dsp.h>
