@@ -514,7 +514,7 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
             } => {
                 let cur_val = **zone;
                 let raw_t = (cur_val - *min) / (*max - *min);
-                let display_t = apply_display_scale(raw_t.clamp(0.0, 1.0), scale, unit.as_deref());
+                let display_t = apply_display_scale(raw_t.clamp(0.0, 1.0), scale);
                 let unit_or_empty = unit.as_deref().unwrap_or("");
                 let meter_id = ui.make_persistent_id(&*label);
 

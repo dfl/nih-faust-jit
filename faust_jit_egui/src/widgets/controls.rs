@@ -43,7 +43,7 @@ pub fn draw_arc(
 }
 
 /// Apply scale transformation for display (bargraphs)
-pub fn apply_display_scale(normalized: f32, scale: &WidgetScale, _unit: Option<&str>) -> f32 {
+pub fn apply_display_scale(normalized: f32, scale: &WidgetScale) -> f32 {
     match scale {
         WidgetScale::Log => {
             // Log scale: spread out low values, compress high values
