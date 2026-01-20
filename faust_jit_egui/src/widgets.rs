@@ -10,6 +10,9 @@ use controls::{
 };
 use meter::{meter_colors, MeterState, GREEN_END, ORANGE_END};
 
+/// Tolerance for floating-point comparisons when syncing UI state with zone values
+const FLOAT_COMPARISON_EPSILON: f32 = 0.001;
+
 // ============================================================================
 // Helper Traits
 // ============================================================================
@@ -439,7 +442,7 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
                             // Sync UI selection with zone value (e.g., after preset load)
                             let zone_val = **zone;
                             if vals.options.get(vals.selected).map(|(_, v)| *v) != Some(zone_val) {
-                                if let Some(pos) = vals.options.iter().position(|(_, v)| (*v - zone_val).abs() < 0.001) {
+                                if let Some(pos) = vals.options.iter().position(|(_, v)| (*v - zone_val).abs() < FLOAT_COMPARISON_EPSILON) {
                                     vals.selected = pos;
                                 }
                             }
@@ -456,7 +459,7 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
                             // Sync UI selection with zone value (e.g., after preset load)
                             let zone_val = **zone;
                             if vals.options.get(vals.selected).map(|(_, v)| *v) != Some(zone_val) {
-                                if let Some(pos) = vals.options.iter().position(|(_, v)| (*v - zone_val).abs() < 0.001) {
+                                if let Some(pos) = vals.options.iter().position(|(_, v)| (*v - zone_val).abs() < FLOAT_COMPARISON_EPSILON) {
                                     vals.selected = pos;
                                 }
                             }
