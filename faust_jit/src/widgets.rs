@@ -413,7 +413,7 @@ extern "C" fn rs_declare_widget(
 ) {
     let builder = unsafe { (builder_ptr as *mut DspWidgetsBuilder).as_mut() }.unwrap();
     let c_label = unsafe { CStr::from_ptr(label_ptr) };
-    let mut label = match c_label.to_str() {
+    let label = match c_label.to_str() {
         Ok("0x00") => "".to_string(),
         Ok(s) => s.to_string(),
         _ => {
@@ -423,21 +423,7 @@ extern "C" fn rs_declare_widget(
         }
     };
 
-    // Extract order metadata from the label
-    // Standard Faust syntax: "[N]paramName" where N is the order number
-    let mut md = builder.pending_metadata.drain(..).collect::<Vec<_>>();
-
-    // Check for leading [N] order prefix (standard Faust syntax)
-    if label.starts_with('[') {
-        if let Some(end) = label.find(']') {
-            let inner = &label[1..end];
-            if let Ok(o) = inner.parse::<i32>() {
-                md.push(MetadataElem::Order(o));
-                label = label[end + 1..].to_string();
-            }
-        }
-    }
-
+    let md = builder.pending_metadata.drain(..).collect::<Vec<_>>();
     builder.widget_decls.push_back((label, decl, md));
 }
 
@@ -499,7 +485,9 @@ extern "C" fn rs_declare_metadata(
             "1" => Some(ME::Nopre(true)),
             _ => None,
         },
-        _ => None,
+        "order" => value.parse::<i32>().ok().map(ME::Order),
+        // Faust compiler converts [N] order prefix to declare(zone, "N", "")
+        _ => key.parse::<i32>().ok().map(ME::Order),
     };
     if let Some(elem) = opt_elem {
         if zone_ptr.is_null() {
