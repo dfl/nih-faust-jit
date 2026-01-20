@@ -176,20 +176,16 @@ fn restore_widget_values(widgets: &mut [DspWidget<&mut f32>], saved: &HashMap<St
         let widget_path = build_widget_path(path, widget.label());
 
         match widget {
-            DspWidget::NumParam { zone, min, max, metadata, .. } => {
-                // Skip parameters marked with [nopre:1] metadata (safeguard)
-                if !metadata.nopre {
-                    if let Some(&value) = saved.get(&widget_path) {
-                        **zone = value.clamp(*min, *max);
-                    }
+            DspWidget::NumParam { zone, min, max, .. } => {
+                // Restore all parameters that have saved values (including nopre ones)
+                // nopre only affects what gets saved to preset FILES, not DSP state restoration
+                if let Some(&value) = saved.get(&widget_path) {
+                    **zone = value.clamp(*min, *max);
                 }
             }
-            DspWidget::BoolParam { zone, nopre, .. } => {
-                // Skip parameters marked with [nopre:1] metadata (safeguard)
-                if !*nopre {
-                    if let Some(&value) = saved.get(&widget_path) {
-                        **zone = value;
-                    }
+            DspWidget::BoolParam { zone, .. } => {
+                if let Some(&value) = saved.get(&widget_path) {
+                    **zone = value;
                 }
             }
             DspWidget::Box { inner, .. } => {

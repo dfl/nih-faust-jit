@@ -140,7 +140,8 @@ pub(super) fn top_panel_contents(
                 if let Ok(preset) = gui_state.preset_manager.load_preset(dsp_name, "Default") {
                     gui_state.selected_preset = Some("Default".to_string());
                     arcs.preset_loading.store(true, Ordering::SeqCst);
-                    *arcs.faust_param_values.write().unwrap() = preset.values;
+                    // Merge preset values, preserving nopre parameters
+                    arcs.faust_param_values.write().unwrap().extend(preset.values);
                     async_executor.execute_background(crate::Tasks::ReloadDsp);
                 }
             }
@@ -170,7 +171,8 @@ pub(super) fn top_panel_contents(
                             match gui_state.preset_manager.load_preset(dsp_name, preset_name) {
                                 Ok(preset) => {
                                     arcs.preset_loading.store(true, Ordering::SeqCst);
-                                    *arcs.faust_param_values.write().unwrap() = preset.values;
+                                    // Merge preset values, preserving nopre parameters
+                                    arcs.faust_param_values.write().unwrap().extend(preset.values);
                                     async_executor.execute_background(crate::Tasks::ReloadDsp);
                                 }
                                 Err(e) => {
