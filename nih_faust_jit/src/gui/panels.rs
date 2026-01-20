@@ -250,55 +250,7 @@ pub(super) fn test_input_panel(
             false
         };
 
-        // Test Signal Generator section
-        ui.label("Test Signal Generator:");
-
-        let test_signal_loaded = arcs.test_signal_dsp.read().unwrap().is_some();
-        let test_signal_enabled = arcs.test_signal_enabled.load(Ordering::Relaxed);
-
-        ui.horizontal(|ui| {
-            if test_signal_loaded {
-                if ui.button("Unload").clicked() {
-                    async_executor.execute_background(crate::Tasks::UnloadTestSignals);
-                }
-
-                // Enable/disable toggle (only affects whether signal is injected)
-                let mut enabled = test_signal_enabled;
-                if ui.checkbox(&mut enabled, "Inject into DSP").changed() {
-                    arcs.test_signal_enabled.store(enabled, Ordering::Relaxed);
-                }
-
-                if !main_dsp_is_effect {
-                    ui.colored_label(egui::Color32::YELLOW, "(DSP has no inputs)");
-                }
-            } else {
-                let can_load = main_dsp_is_effect;
-                let load_btn = ui.add_enabled(can_load, egui::Button::new("Load Test Signal Generator"));
-                if load_btn.clicked() {
-                    async_executor.execute_background(crate::Tasks::LoadTestSignals);
-                }
-                if !main_dsp_is_effect {
-                    ui.colored_label(egui::Color32::GRAY, "Only available for effects (DSPs with inputs)");
-                }
-            }
-        });
-
-        // Show test signal DSP widgets when loaded
-        if test_signal_loaded {
-            if let Ok(test_dsp_guard) = arcs.test_signal_dsp.try_read() {
-                if let Some(test_dsp) = test_dsp_guard.as_ref() {
-                    ui.indent("test_signal_widgets", |ui| {
-                        test_dsp.with_widgets_mut(|widgets| {
-                            faust_jit_egui::faust_widgets_ui(ui, widgets);
-                        });
-                    });
-                }
-            }
-        }
-
-        ui.separator();
-
-        // Audio File section - compact layout
+        // Audio File section
         let player = arcs.audio_file_player.read().unwrap();
         let audio_info = player.get_audio_info();
         drop(player);
@@ -314,10 +266,13 @@ pub(super) fn test_input_panel(
             None => (false, 0, 48000, None),
         };
 
+        let test_signal_loaded = arcs.test_signal_dsp.read().unwrap().is_some();
+        let test_signal_enabled = arcs.test_signal_enabled.load(Ordering::Relaxed);
+
+        // First row: Audio load + Test signal generator button
         ui.horizontal(|ui| {
-            let load_btn = egui::Button::new("Load");
-            let load_response = ui.add_enabled(main_dsp_is_effect, load_btn);
-            if load_response.clicked() {
+            // Audio file load button
+            if ui.add_enabled(main_dsp_is_effect, egui::Button::new("Load Audio")).clicked() {
                 let pending = Arc::clone(&gui_state.pending_audio_file);
                 std::thread::spawn(move || {
                     if let Some(path) = rfd::FileDialog::new()
@@ -329,14 +284,37 @@ pub(super) fn test_input_panel(
                 });
             }
 
-            ui.label("Audio:");
             if let Some(name) = &filename {
                 ui.label(name);
             } else {
                 ui.colored_label(egui::Color32::GRAY, "(none)");
             }
 
-            if has_audio {
+            ui.separator();
+
+            // Test signal generator controls
+            if test_signal_loaded {
+                if ui.button("Unload Generator").clicked() {
+                    async_executor.execute_background(crate::Tasks::UnloadTestSignals);
+                }
+                let mut enabled = test_signal_enabled;
+                if ui.checkbox(&mut enabled, "Inject").changed() {
+                    arcs.test_signal_enabled.store(enabled, Ordering::Relaxed);
+                }
+            } else {
+                if ui.add_enabled(main_dsp_is_effect, egui::Button::new("Load Generator")).clicked() {
+                    async_executor.execute_background(crate::Tasks::LoadTestSignals);
+                }
+            }
+
+            if !main_dsp_is_effect {
+                ui.colored_label(egui::Color32::GRAY, "(effect DSP required)");
+            }
+        });
+
+        // Audio playback controls (if audio loaded)
+        if has_audio {
+            ui.horizontal(|ui| {
                 let playing = arcs.playback_state.playing.load(Ordering::Relaxed);
                 if ui.button(if playing { "Pause" } else { "Play" }).clicked() {
                     arcs.playback_state.playing.store(!playing, Ordering::Relaxed);
@@ -360,8 +338,21 @@ pub(super) fn test_input_panel(
                 if ui.add(egui::Slider::new(&mut pos_f, 0.0..=1.0).show_value(false)).changed() {
                     arcs.playback_state.position.store((pos_f * total_frames as f32) as u64, Ordering::Relaxed);
                 }
+            });
+        }
+
+        // Show test signal DSP widgets when loaded
+        if test_signal_loaded {
+            if let Ok(test_dsp_guard) = arcs.test_signal_dsp.try_read() {
+                if let Some(test_dsp) = test_dsp_guard.as_ref() {
+                    ui.indent("test_signal_widgets", |ui| {
+                        test_dsp.with_widgets_mut(|widgets| {
+                            faust_jit_egui::faust_widgets_ui(ui, widgets);
+                        });
+                    });
+                }
             }
-        });
+        }
     });
 }
 
