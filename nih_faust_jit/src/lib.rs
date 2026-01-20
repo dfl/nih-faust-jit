@@ -228,7 +228,7 @@ impl Default for NihFaustJitParams {
                 dsp_lib_path: env!("DSP_LIBS_PATH").into(),
             })),
 
-            dsp_nvoices: Arc::new(RwLock::new(0)),  // Default to Effect mode
+            dsp_nvoices: Arc::new(RwLock::new(-1)),  // AutoDetect from script metadata
 
             faust_param_values: Arc::new(RwLock::new(HashMap::new())),
 
