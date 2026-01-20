@@ -108,23 +108,26 @@ fn build_widget_path(path: &str, label: &str) -> String {
 }
 
 /// Recursively save widget values to a HashMap
-pub(crate) fn save_widget_values<Z: Zone>(widgets: &[DspWidget<Z>], storage: &mut HashMap<String, f32>, path: &str) {
+/// If `for_preset` is true, parameters with [nopre:1] metadata are skipped
+pub(crate) fn save_widget_values<Z: Zone>(widgets: &[DspWidget<Z>], storage: &mut HashMap<String, f32>, path: &str, for_preset: bool) {
     for widget in widgets {
         let widget_path = build_widget_path(path, widget.label());
 
         match widget {
-            DspWidget::NumParam { zone, .. } => {
-                if !widget_path.is_empty() {
+            DspWidget::NumParam { zone, metadata, .. } => {
+                // Skip parameters marked with [nopre:1] only when saving for presets
+                if !(for_preset && metadata.nopre) && !widget_path.is_empty() {
                     storage.insert(widget_path, zone.cur_value());
                 }
             }
-            DspWidget::BoolParam { zone, .. } => {
-                if !widget_path.is_empty() {
+            DspWidget::BoolParam { zone, nopre, .. } => {
+                // Skip parameters marked with [nopre:1] only when saving for presets
+                if !(for_preset && *nopre) && !widget_path.is_empty() {
                     storage.insert(widget_path, zone.cur_value());
                 }
             }
             DspWidget::Box { inner, .. } => {
-                save_widget_values(inner, storage, &widget_path);
+                save_widget_values(inner, storage, &widget_path, for_preset);
             }
             DspWidget::NumDisplay { .. } => {
                 // Displays are read-only, don't save
@@ -173,14 +176,20 @@ fn restore_widget_values(widgets: &mut [DspWidget<&mut f32>], saved: &HashMap<St
         let widget_path = build_widget_path(path, widget.label());
 
         match widget {
-            DspWidget::NumParam { zone, min, max, .. } => {
-                if let Some(&value) = saved.get(&widget_path) {
-                    **zone = value.clamp(*min, *max);
+            DspWidget::NumParam { zone, min, max, metadata, .. } => {
+                // Skip parameters marked with [nopre:1] metadata (safeguard)
+                if !metadata.nopre {
+                    if let Some(&value) = saved.get(&widget_path) {
+                        **zone = value.clamp(*min, *max);
+                    }
                 }
             }
-            DspWidget::BoolParam { zone, .. } => {
-                if let Some(&value) = saved.get(&widget_path) {
-                    **zone = value;
+            DspWidget::BoolParam { zone, nopre, .. } => {
+                // Skip parameters marked with [nopre:1] metadata (safeguard)
+                if !*nopre {
+                    if let Some(&value) = saved.get(&widget_path) {
+                        **zone = value;
+                    }
                 }
             }
             DspWidget::Box { inner, .. } => {

@@ -145,7 +145,7 @@ pub(crate) fn create_gui(
                                         drop(storage);
                                         if !arcs.preset_loading.load(Ordering::SeqCst) {
                                             let mut storage = arcs.faust_param_values.write().unwrap();
-                                            save_widget_values(widgets, &mut storage, "");
+                                            save_widget_values(widgets, &mut storage, "", false);
                                         }
                                     })
                                 });

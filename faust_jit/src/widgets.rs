@@ -104,6 +104,8 @@ pub struct NumMetadata {
     pub tooltip: Option<String>,
     /// The display order (lower is first)
     pub order: i32,
+    /// Whether to exclude from preset save/load
+    pub nopre: bool,
 }
 
 #[derive(Debug)]
@@ -144,6 +146,7 @@ pub enum DspWidget<Z> {
         hidden: bool,
         tooltip: Option<String>,
         order: i32,
+        nopre: bool,
     },
     /// Widgets corresponding to interactive numerical floating-point parameters
     /// (hslider, vslider and nentry in Faust), which can take continuous or
@@ -255,6 +258,7 @@ enum MetadataElem {
     Style(WidgetStyle),
     Scale(WidgetScale),
     Hidden(bool),
+    Nopre(bool),
     Unit(String),
     Tooltip(String),
     Order(i32),
@@ -319,13 +323,19 @@ impl DspWidgetsBuilder {
                 hidden: false,
                 tooltip: None,
                 order: 0,
+                nopre: false,
             };
             let mut order = 0;
+            let mut bool_nopre = false;
             while let Some(elem) = md_elems.pop() {
                 match elem {
                     ME::Style(s) => style = Some(s),
                     ME::Scale(s) => metadata.scale = s,
                     ME::Hidden(h) => metadata.hidden = h,
+                    ME::Nopre(n) => {
+                        metadata.nopre = n;
+                        bool_nopre = n;
+                    }
                     ME::Unit(u) => metadata.unit = Some(u),
                     ME::Tooltip(t) => metadata.tooltip = Some(t),
                     ME::Order(o) => {
@@ -353,6 +363,7 @@ impl DspWidgetsBuilder {
                     hidden: metadata.hidden,
                     tooltip: metadata.tooltip,
                     order,
+                    nopre: bool_nopre,
                 },
                 W::HORIZONTAL_SLIDER | W::VERTICAL_SLIDER | W::NUM_ENTRY => DspWidget::NumParam {
                     layout: NumParamLayout::from_decl_type(decl.typ),
@@ -481,6 +492,11 @@ extern "C" fn rs_declare_metadata(
         "hidden" => match value {
             "0" => Some(ME::Hidden(false)),
             "1" => Some(ME::Hidden(true)),
+            _ => None,
+        },
+        "nopre" => match value {
+            "0" => Some(ME::Nopre(false)),
+            "1" => Some(ME::Nopre(true)),
             _ => None,
         },
         _ => None,

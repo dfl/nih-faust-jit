@@ -2,7 +2,8 @@ use nih_plug::prelude::*;
 use nih_plug_egui::egui;
 use std::sync::{atomic::Ordering, Arc};
 
-use crate::{audio_file, config, DspState, DspType};
+use crate::{audio_file, config, save_widget_values, DspState, DspType};
+use std::collections::HashMap;
 use super::{GuiArcs, GuiState};
 
 pub(crate) fn enum_combobox<T: strum::IntoEnumIterator + PartialEq + std::fmt::Debug>(
@@ -221,7 +222,16 @@ pub(super) fn top_panel_contents(
                 .add_enabled(!gui_state.save_preset_name.is_empty(), egui::Button::new("Save"))
                 .clicked()
             {
-                let values = arcs.faust_param_values.read().unwrap().clone();
+                // Collect values from widgets, excluding [nopre:1] parameters
+                let values = if let DspState::Loaded(dsp) = &*arcs.dsp_state.read().unwrap() {
+                    let mut preset_values = HashMap::new();
+                    dsp.with_widgets(|widgets| {
+                        save_widget_values(widgets, &mut preset_values, "", true);
+                    });
+                    preset_values
+                } else {
+                    arcs.faust_param_values.read().unwrap().clone()
+                };
                 match gui_state.preset_manager.save_preset(
                     dsp_name,
                     &gui_state.save_preset_name,
