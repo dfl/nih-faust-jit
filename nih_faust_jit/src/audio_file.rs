@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use rubato::{SincInterpolationParameters, SincInterpolationType, WindowFunction};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -14,6 +15,35 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+
+// Resampling quality parameters for rubato's sinc resampler.
+// These values provide high-quality resampling suitable for audio production.
+// See: https://docs.rs/rubato/latest/rubato/struct.SincInterpolationParameters.html
+
+/// Length of the sinc interpolation filter. Higher values improve quality
+/// (especially for high-frequency content) at the cost of CPU usage.
+/// 256 is recommended for high-quality resampling.
+const SINC_LEN: usize = 256;
+
+/// Cutoff frequency as a fraction of the Nyquist frequency (0.0 to 1.0).
+/// 0.95 preserves most of the audible spectrum while providing margin
+/// for the anti-aliasing filter rolloff.
+const SINC_CUTOFF: f32 = 0.95;
+
+/// Interpolation type between sinc table entries.
+/// Linear is faster; Cubic provides slightly better quality for variable-rate
+/// resampling. For fixed-ratio resampling, the difference is minimal.
+const SINC_INTERPOLATION: SincInterpolationType = SincInterpolationType::Linear;
+
+/// Oversampling factor for the sinc function table. Higher values improve
+/// the accuracy of the interpolated sinc values. 256 is a standard choice
+/// for high-quality resampling; lower values (e.g., 128) trade quality for speed.
+const SINC_OVERSAMPLING: usize = 256;
+
+/// Window function applied to the sinc filter to reduce sidelobes.
+/// BlackmanHarris2 offers excellent sidelobe suppression (~92 dB),
+/// making it suitable for high-fidelity audio processing.
+const SINC_WINDOW: WindowFunction = WindowFunction::BlackmanHarris2;
 
 /// Decoded and resampled audio data, ready for playback
 #[derive(Clone)]
@@ -225,7 +255,7 @@ fn resample_audio(
     from_rate: u32,
     to_rate: u32,
 ) -> Result<Vec<Vec<f32>>, String> {
-    use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+    use rubato::{Resampler, SincFixedIn};
 
     let channels = input.len();
     if channels == 0 {
@@ -233,11 +263,11 @@ fn resample_audio(
     }
 
     let params = SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        interpolation: SincInterpolationType::Linear,
-        oversampling_factor: 256,
-        window: WindowFunction::BlackmanHarris2,
+        sinc_len: SINC_LEN,
+        f_cutoff: SINC_CUTOFF,
+        interpolation: SINC_INTERPOLATION,
+        oversampling_factor: SINC_OVERSAMPLING,
+        window: SINC_WINDOW,
     };
 
     let mut resampler = SincFixedIn::<f32>::new(
