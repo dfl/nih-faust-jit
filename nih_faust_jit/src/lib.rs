@@ -502,27 +502,25 @@ impl Plugin for NihFaustJit {
 
             // Processing audio buffers:
             // Note: For mono DSPs (1 in, 1 out), only buffer[0] is processed
-            
-            // DEBUG: Log sample values before and after DSP processing
-            let log_samples = count % 100 == 50; // Log different blocks than status logs
-            let pre_rms = if log_samples {
+
+            // Capture pre-processing samples for debug logging
+            let (pre_rms, pre_samples) = if self.debug_mode && count % 100 == 50 {
                 let buf = buffer.as_slice();
                 let sum: f32 = buf[0].iter().take(64).map(|s| s * s).sum();
-                (sum / 64.0).sqrt()
-            } else { 0.0 };
-            let pre_samples = if log_samples {
-                let buf = buffer.as_slice();
-                format!("{:.4}, {:.4}, {:.4}", buf[0].get(0).unwrap_or(&0.0), buf[0].get(1).unwrap_or(&0.0), buf[0].get(2).unwrap_or(&0.0))
-            } else { String::new() };
-            
+                let rms = (sum / 64.0).sqrt();
+                let samples = format!("{:.4}, {:.4}, {:.4}", buf[0].get(0).unwrap_or(&0.0), buf[0].get(1).unwrap_or(&0.0), buf[0].get(2).unwrap_or(&0.0));
+                (Some(rms), Some(samples))
+            } else { (None, None) };
+
             dsp.process_buffers(buffer.as_slice());
-            
-            if self.debug_mode && log_samples {
+
+            // Log sample values before and after DSP processing
+            if let (Some(pre_rms), Some(pre_samples)) = (pre_rms, pre_samples) {
                 let buf = buffer.as_slice();
                 let post_sum: f32 = buf[0].iter().take(64).map(|s| s * s).sum();
                 let post_rms = (post_sum / 64.0).sqrt();
                 let post_samples = format!("{:.4}, {:.4}, {:.4}", buf[0].get(0).unwrap_or(&0.0), buf[0].get(1).unwrap_or(&0.0), buf[0].get(2).unwrap_or(&0.0));
-                log!(Level::Info, "DSP: pre_rms={:.6}, post_rms={:.6}, pre=[{}], post=[{}]", 
+                log!(Level::Info, "DSP: pre_rms={:.6}, post_rms={:.6}, pre=[{}], post=[{}]",
                     pre_rms, post_rms, pre_samples, post_samples);
             }
             
