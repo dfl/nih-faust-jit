@@ -1568,3 +1568,217 @@ fn benchmark_panel(ui: &mut egui::Ui, metrics: &testbench::SharedMetrics) {
         metrics.reset();
     }
 }
+
+/// On-screen MIDI keyboard for triggering instruments
+pub(super) fn midi_keyboard_panel(
+    ui: &mut egui::Ui,
+    arcs: &GuiArcs,
+    gui_state: &mut super::GuiState,
+) {
+    egui::CollapsingHeader::new("MIDI Keyboard")
+        .default_open(true)
+        .show(ui, |ui| {
+        // Octave selector
+        ui.horizontal(|ui| {
+            ui.label("Octave:");
+            if ui.button("◀").clicked() && gui_state.keyboard_octave > 0 {
+                // Release any held note before changing octave
+                if let Some(note) = gui_state.mouse_pressed_note.take() {
+                    let _ = arcs.gui_midi_tx.try_send([0x80, note, 0]);
+                }
+                gui_state.keyboard_octave -= 1;
+            }
+            ui.label(format!("{}", gui_state.keyboard_octave));
+            if ui.button("▶").clicked() && gui_state.keyboard_octave < 8 {
+                // Release any held note before changing octave
+                if let Some(note) = gui_state.mouse_pressed_note.take() {
+                    let _ = arcs.gui_midi_tx.try_send([0x80, note, 0]);
+                }
+                gui_state.keyboard_octave += 1;
+            }
+            ui.add_space(20.0);
+            ui.label("(Click keys or use computer keyboard: Z-M = white keys, S-K = black keys)");
+        });
+
+        // Piano keyboard drawing
+        let num_octaves = 2;
+        let num_white_keys = num_octaves * 7;
+        let key_width = 28.0;
+        let key_height = 100.0;
+        let black_key_width = key_width * 0.6;
+        let black_key_height = key_height * 0.55;
+
+        let total_width = num_white_keys as f32 * key_width;
+        let (response, painter) = ui.allocate_painter(
+            egui::vec2(total_width + 2.0, key_height + 2.0),
+            egui::Sense::click_and_drag(),
+        );
+        let rect = response.rect;
+
+        // Pattern: which notes are black keys (C C# D D# E F F# G G# A A# B)
+        let is_black = [false, true, false, true, false, false, true, false, true, false, true, false];
+        // White key indices for each semitone (used for positioning)
+        let white_key_index = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6]; // C=0, D=1, E=2, F=3, G=4, A=5, B=6
+
+        // Calculate which key is under the mouse
+        let hovered_note: Option<u8> = (|| {
+            let pos = response.hover_pos()?;
+            let rel_x = pos.x - rect.left();
+            let rel_y = pos.y - rect.top();
+
+            if rel_x < 0.0 || rel_x >= total_width || rel_y < 0.0 || rel_y >= key_height {
+                return None;
+            }
+
+            let base_note = gui_state.keyboard_octave as u8 * 12;
+
+            // Check black keys first (they're on top)
+            if rel_y < black_key_height {
+                for octave in 0..num_octaves {
+                    for semitone in 0..12u8 {
+                        if is_black[semitone as usize] {
+                            let white_idx = octave * 7 + white_key_index[semitone as usize];
+                            // Black keys are positioned between white keys
+                            let black_x = (white_idx as f32 + 0.7) * key_width - black_key_width / 2.0;
+                            if rel_x >= black_x && rel_x < black_x + black_key_width {
+                                let note = base_note + octave as u8 * 12 + semitone;
+                                if note <= 127 {
+                                    return Some(note);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check white keys
+            let white_key_idx = (rel_x / key_width) as usize;
+            if white_key_idx < num_white_keys {
+                let octave = white_key_idx / 7;
+                let white_in_octave = white_key_idx % 7;
+                // Map white key index to semitone: C=0, D=2, E=4, F=5, G=7, A=9, B=11
+                let semitone = [0, 2, 4, 5, 7, 9, 11][white_in_octave];
+                let note = base_note + octave as u8 * 12 + semitone;
+                if note <= 127 {
+                    return Some(note);
+                }
+            }
+
+            None
+        })();
+
+        // Background
+        painter.rect_filled(
+            rect,
+            4.0,
+            egui::Color32::from_rgb(30, 30, 35),
+        );
+
+        // Draw white keys first
+        let base_note = gui_state.keyboard_octave as u8 * 12;
+        for white_idx in 0..num_white_keys {
+            let octave = white_idx / 7;
+            let white_in_octave = white_idx % 7;
+            let semitone = [0, 2, 4, 5, 7, 9, 11][white_in_octave];
+            let note = base_note + octave as u8 * 12 + semitone;
+
+            let x = rect.left() + white_idx as f32 * key_width + 1.0;
+            let key_rect = egui::Rect::from_min_size(
+                egui::pos2(x, rect.top() + 1.0),
+                egui::vec2(key_width - 2.0, key_height - 2.0),
+            );
+
+            let is_pressed = gui_state.mouse_pressed_note == Some(note)
+                || gui_state.keyboard_pressed_notes.contains(&note);
+            let is_hovered = hovered_note == Some(note);
+
+            let color = if is_pressed {
+                egui::Color32::from_rgb(200, 100, 100)
+            } else if is_hovered {
+                egui::Color32::from_rgb(230, 230, 200)
+            } else {
+                egui::Color32::from_rgb(245, 245, 240)
+            };
+
+            painter.rect_filled(key_rect, 3.0, color);
+            painter.rect_stroke(key_rect, 3.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 100, 100)), egui::StrokeKind::Outside);
+
+            // Note label for C keys
+            if white_in_octave == 0 && note <= 127 {
+                let oct = note / 12;
+                painter.text(
+                    egui::pos2(x + key_width / 2.0 - 1.0, rect.bottom() - 15.0),
+                    egui::Align2::CENTER_CENTER,
+                    format!("C{}", oct),
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::from_rgb(100, 100, 100),
+                );
+            }
+        }
+
+        // Draw black keys on top
+        for octave in 0..num_octaves {
+            for semitone in 0..12u8 {
+                if is_black[semitone as usize] {
+                    let white_idx = octave * 7 + white_key_index[semitone as usize];
+                    let black_x = rect.left() + (white_idx as f32 + 0.7) * key_width - black_key_width / 2.0;
+                    let note = base_note + octave as u8 * 12 + semitone;
+
+                    if note <= 127 {
+                        let key_rect = egui::Rect::from_min_size(
+                            egui::pos2(black_x, rect.top() + 1.0),
+                            egui::vec2(black_key_width, black_key_height),
+                        );
+
+                        let is_pressed = gui_state.mouse_pressed_note == Some(note)
+                            || gui_state.keyboard_pressed_notes.contains(&note);
+                        let is_hovered = hovered_note == Some(note);
+
+                        let color = if is_pressed {
+                            egui::Color32::from_rgb(150, 60, 60)
+                        } else if is_hovered {
+                            egui::Color32::from_rgb(60, 60, 70)
+                        } else {
+                            egui::Color32::from_rgb(30, 30, 35)
+                        };
+
+                        painter.rect_filled(key_rect, 2.0, color);
+                        painter.rect_stroke(key_rect, 2.0, egui::Stroke::new(1.0, egui::Color32::BLACK), egui::StrokeKind::Outside);
+                    }
+                }
+            }
+        }
+
+        // Handle mouse interaction
+        let mouse_down = ui.input(|i| i.pointer.primary_down());
+        let mouse_pressed = ui.input(|i| i.pointer.primary_pressed());
+
+        if mouse_pressed {
+            if let Some(note) = hovered_note {
+                // Send Note On
+                let _ = arcs.gui_midi_tx.try_send([0x90, note, 100]);
+                gui_state.mouse_pressed_note = Some(note);
+            }
+        } else if mouse_down {
+            // Check for sliding across keys while mouse is down
+            if let Some(note) = hovered_note {
+                if gui_state.mouse_pressed_note != Some(note) {
+                    // Release previous note
+                    if let Some(prev_note) = gui_state.mouse_pressed_note.take() {
+                        let _ = arcs.gui_midi_tx.try_send([0x80, prev_note, 0]);
+                    }
+                    // Play new note
+                    let _ = arcs.gui_midi_tx.try_send([0x90, note, 100]);
+                    gui_state.mouse_pressed_note = Some(note);
+                }
+            }
+        }
+
+        // Handle mouse release or leave
+        if !mouse_down || (!response.hovered() && gui_state.mouse_pressed_note.is_some()) {
+            if let Some(note) = gui_state.mouse_pressed_note.take() {
+                let _ = arcs.gui_midi_tx.try_send([0x80, note, 0]); // Note Off
+            }
+        }
+    });
+}

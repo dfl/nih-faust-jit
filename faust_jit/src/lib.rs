@@ -320,8 +320,12 @@ impl SingletonDsp {
     /// See [`Self::process_buffers`] for more info
     pub fn handle_raw_midi(&self, timestamp: f64, midi_data: [u8; 3]) {
         let uis = self.uis.load(Ordering::Relaxed);
-        unsafe {
-            w_handleRawMidi(uis, timestamp, midi_data.as_ptr());
+        let dsp = self.instance.lock().unwrap();
+        let dsp_ptr = dsp.load(Ordering::Relaxed);
+        if !uis.is_null() && !dsp_ptr.is_null() {
+            unsafe {
+                w_handleRawMidi(dsp_ptr, uis, timestamp, midi_data.as_ptr());
+            }
         }
     }
 
@@ -336,34 +340,38 @@ impl SingletonDsp {
     pub fn handle_midi_sync(&self, playing: bool, opt_clock_data: &Option<ClockData>) {
         let already_playing = self.transport_already_playing.load(Ordering::Relaxed);
         let uis = self.uis.load(Ordering::Relaxed);
-        if playing {
-            if !already_playing {
-                unsafe { w_handleMidiSync(uis, 0.0, WMidiSyncMsg::MIDI_START) };
-                self.transport_already_playing
-                    .store(true, Ordering::Relaxed);
-            }
-
-            // We generate and send to the DSP a 24 PPQN clock:
-            if let Some(clock_data) = opt_clock_data {
-                let samples_per_beat = (self.info.sample_rate as f64) * 60.0 / clock_data.tempo;
-                let samples_per_pulse = (samples_per_beat / 24.0) as i64;
-
-                // next_pulse_pos is in buffer coordinates (ie. 0 is the first sample of
-                // the current buffer)
-                let rem = clock_data.next_buffer_sample_position % samples_per_pulse;
-                let mut next_pulse_pos = if rem == 0 { 0 } else { samples_per_pulse - rem };
-                while next_pulse_pos < clock_data.next_buffer_size as i64 {
-                    unsafe {
-                        w_handleMidiSync(uis, next_pulse_pos as f64, WMidiSyncMsg::MIDI_CLOCK)
-                    };
-                    next_pulse_pos += samples_per_pulse;
+        let dsp = self.instance.lock().unwrap();
+        let dsp_ptr = dsp.load(Ordering::Relaxed);
+        if !uis.is_null() && !dsp_ptr.is_null() {
+            if playing {
+                if !already_playing {
+                    unsafe { w_handleMidiSync(dsp_ptr, uis, 0.0, WMidiSyncMsg::MIDI_START) };
+                    self.transport_already_playing
+                        .store(true, Ordering::Relaxed);
                 }
-            }
-        } else {
-            if already_playing {
-                unsafe { w_handleMidiSync(uis, 0.0, WMidiSyncMsg::MIDI_STOP) };
-                self.transport_already_playing
-                    .store(false, Ordering::Relaxed);
+
+                // We generate and send to the DSP a 24 PPQN clock:
+                if let Some(clock_data) = opt_clock_data {
+                    let samples_per_beat = (self.info.sample_rate as f64) * 60.0 / clock_data.tempo;
+                    let samples_per_pulse = (samples_per_beat / 24.0) as i64;
+
+                    // next_pulse_pos is in buffer coordinates (ie. 0 is the first sample of
+                    // the current buffer)
+                    let rem = clock_data.next_buffer_sample_position % samples_per_pulse;
+                    let mut next_pulse_pos = if rem == 0 { 0 } else { samples_per_pulse - rem };
+                    while next_pulse_pos < clock_data.next_buffer_size as i64 {
+                        unsafe {
+                            w_handleMidiSync(dsp_ptr, uis, next_pulse_pos as f64, WMidiSyncMsg::MIDI_CLOCK)
+                        };
+                        next_pulse_pos += samples_per_pulse;
+                    }
+                }
+            } else {
+                if already_playing {
+                    unsafe { w_handleMidiSync(dsp_ptr, uis, 0.0, WMidiSyncMsg::MIDI_STOP) };
+                    self.transport_already_playing
+                        .store(false, Ordering::Relaxed);
+                }
             }
         }
     }

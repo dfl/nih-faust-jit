@@ -221,6 +221,28 @@ fn draw_bargraph_with_state(
 // Main Widget Rendering
 // ============================================================================
 
+// Groups to skip entirely (hide from UI)
+const SKIP_GROUPS: &[&str] = &["DSP2"];
+// Groups to unwrap (render children directly without the group header)
+const UNWRAP_GROUPS: &[&str] = &["Sequencer", "Polyphonic", "DSP1", "V1", "FaustDSP"];
+
+/// Check if a label is an individual voice group V2, V3, etc. (skip all except V1)
+fn is_voice_group_to_skip(label: &str) -> bool {
+    if label.starts_with('V') && label.len() >= 2 {
+        let rest = &label[1..];
+        if rest.chars().all(|c| c.is_ascii_digit()) {
+            // Skip V2, V3, ... but NOT V1
+            return rest != "1";
+        }
+    }
+    false
+}
+
+/// Check if a group should be skipped
+fn should_skip(label: &str) -> bool {
+    SKIP_GROUPS.contains(&label) || is_voice_group_to_skip(label)
+}
+
 fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], in_a_tab: bool) {
     for w in widgets {
         match w {
@@ -230,6 +252,15 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
                 inner,
                 ..
             } => {
+                // Skip groups we want to hide
+                if should_skip(label) {
+                    continue;
+                }
+                // Unwrap groups - render children directly without the tab UI
+                if UNWRAP_GROUPS.contains(&label.as_str()) {
+                    faust_widgets_ui_rec(ui, inner, in_a_tab);
+                    continue;
+                }
                 let id = ui.make_persistent_id(&label);
                 egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(),
@@ -239,6 +270,10 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
                 .show_header(ui, |ui| {
                     ui.label(&*label);
                     for (idx, w) in inner.iter().enumerate() {
+                        // Skip hidden groups in tab buttons too
+                        if should_skip(w.label()) {
+                            continue;
+                        }
                         let btn = egui::Button::new(w.label())
                             .do_if(*selected == idx, |s| s.fill(egui::Color32::DARK_BLUE));
                         if ui.add(btn).clicked() {
@@ -256,6 +291,15 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
                 inner,
                 ..
             } => {
+                // Skip groups we want to hide
+                if should_skip(label) {
+                    continue;
+                }
+                // Unwrap groups - render children directly
+                if UNWRAP_GROUPS.contains(&label.as_str()) {
+                    faust_widgets_ui_rec(ui, inner, in_a_tab);
+                    continue;
+                }
                 let egui_layout = match layout {
                     BoxLayout::Horizontal => Layout::left_to_right(Align::Min),
                     BoxLayout::Vertical => Layout::top_down(Align::Min),
@@ -622,4 +666,149 @@ fn faust_widgets_ui_rec(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>], 
 /// Draw and update the faust widgets inside an egui::Ui
 pub fn faust_widgets_ui(ui: &mut egui::Ui, widgets: &mut [DspWidget<&mut f32>]) {
     faust_widgets_ui_rec(ui, widgets, false);
+    // Sync V1 parameters to V2-V8 for unified control
+    sync_voice_parameters(widgets);
+}
+
+/// Sync parameters from V1 to V2, V3, etc. so all voices use the same values
+fn sync_voice_parameters(widgets: &mut [DspWidget<&mut f32>]) {
+    // First, collect V1's parameter values
+    let mut v1_values: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    collect_voice_params(widgets, "V1", "", &mut v1_values);
+
+    // Then apply to V2, V3, etc.
+    for voice_num in 2..=16 {
+        let voice_label = format!("V{}", voice_num);
+        apply_voice_params(widgets, &voice_label, "", &v1_values);
+    }
+}
+
+/// Recursively collect parameter values from a specific voice
+fn collect_voice_params(
+    widgets: &[DspWidget<&mut f32>],
+    target_voice: &str,
+    path: &str,
+    values: &mut std::collections::HashMap<String, f32>,
+) {
+    for widget in widgets {
+        match widget {
+            DspWidget::Box { label, inner, .. } => {
+                let new_path = if path.is_empty() {
+                    label.clone()
+                } else {
+                    format!("{}/{}", path, label)
+                };
+
+                if label == target_voice {
+                    // We're inside the target voice - collect all params within
+                    collect_all_params(inner, "", values);
+                } else {
+                    // Keep searching
+                    collect_voice_params(inner, target_voice, &new_path, values);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect all parameters within a widget tree (relative paths)
+fn collect_all_params(
+    widgets: &[DspWidget<&mut f32>],
+    path: &str,
+    values: &mut std::collections::HashMap<String, f32>,
+) {
+    for widget in widgets {
+        let label = widget.label();
+        // Skip MIDI-controlled parameters to preserve polyphony
+        if label == "freq" || label == "gate" || label == "gain" {
+            continue;
+        }
+
+        let widget_path = if path.is_empty() {
+            label.to_string()
+        } else {
+            format!("{}/{}", path, label)
+        };
+
+        match widget {
+            DspWidget::Box { inner, .. } => {
+                collect_all_params(inner, &widget_path, values);
+            }
+            DspWidget::NumParam { zone, .. } => {
+                values.insert(widget_path, **zone);
+            }
+            DspWidget::BoolParam { zone, .. } => {
+                values.insert(widget_path, **zone);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Apply parameter values to a specific voice
+fn apply_voice_params(
+    widgets: &mut [DspWidget<&mut f32>],
+    target_voice: &str,
+    path: &str,
+    values: &std::collections::HashMap<String, f32>,
+) {
+    for widget in widgets {
+        match widget {
+            DspWidget::Box { label, inner, .. } => {
+                let new_path = if path.is_empty() {
+                    label.clone()
+                } else {
+                    format!("{}/{}", path, label)
+                };
+
+                if label == target_voice {
+                    // We're inside the target voice - apply all params
+                    apply_all_params(inner, "", values);
+                } else {
+                    // Keep searching
+                    apply_voice_params(inner, target_voice, &new_path, values);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Apply parameter values within a widget tree
+fn apply_all_params(
+    widgets: &mut [DspWidget<&mut f32>],
+    path: &str,
+    values: &std::collections::HashMap<String, f32>,
+) {
+    for widget in widgets {
+        let label = widget.label();
+        // Skip MIDI-controlled parameters to preserve polyphony
+        if label == "freq" || label == "gate" || label == "gain" {
+            continue;
+        }
+
+        let widget_path = if path.is_empty() {
+            label.to_string()
+        } else {
+            format!("{}/{}", path, label)
+        };
+
+        match widget {
+            DspWidget::Box { inner, .. } => {
+                apply_all_params(inner, &widget_path, values);
+            }
+            DspWidget::NumParam { zone, .. } => {
+                if let Some(&value) = values.get(&widget_path) {
+                    **zone = value;
+                }
+            }
+            DspWidget::BoolParam { zone, .. } => {
+                if let Some(&value) = values.get(&widget_path) {
+                    **zone = value;
+                }
+            }
+            _ => {}
+        }
+    }
 }
