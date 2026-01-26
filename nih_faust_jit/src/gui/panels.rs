@@ -671,10 +671,13 @@ fn spectrum_panel(ui: &mut egui::Ui, state: &mut testbench::TestbenchState, is_e
         // Spectrogram display with optional comparison
         if state.show_comparison && is_effect {
             spectrogram_comparison_display(ui, &mut state.spectrum, &state.pre_spectrum);
-            // Legend for comparison mode
+            // Legend for difference-based comparison mode
             ui.horizontal(|ui| {
-                ui.colored_label(egui::Color32::from_rgb(255, 100, 20), "■ Output");
-                ui.colored_label(egui::Color32::from_rgb(50, 150, 255), "■ Input");
+                ui.colored_label(egui::Color32::from_rgb(50, 55, 60), "■ Unchanged");
+                ui.colored_label(egui::Color32::from_rgb(255, 40, 200), "■ Created");
+                ui.colored_label(egui::Color32::from_rgb(255, 140, 30), "■ Strengthened");
+                ui.colored_label(egui::Color32::from_rgb(40, 120, 180), "■ Weakened");
+                ui.colored_label(egui::Color32::from_rgb(20, 20, 80), "■ Removed");
             });
         } else {
             spectrogram_display(ui, &mut state.spectrum);
@@ -913,12 +916,15 @@ fn spectrogram_display(ui: &mut egui::Ui, spectrum: &mut testbench::SpectrumStat
     }
 }
 
-/// Spectrogram comparison: output (orange/red) with input (blue) overlaid.
+/// Spectrogram comparison with difference-based coloring.
 fn spectrogram_comparison_display(
     ui: &mut egui::Ui,
     post: &mut testbench::SpectrumState,
     pre: &testbench::SpectrumState,
 ) {
+    // Tuning constants
+    let unchanged_brightness: f32 = 1.0;
+    let diff_threshold: f32 = 0.01;
     let height = 200.0;
     let (response, painter) = ui.allocate_painter(
         egui::vec2(ui.available_width(), height),
@@ -965,26 +971,85 @@ fn spectrogram_comparison_display(
 
     let db_range = post.max_db - post.min_db;
 
-    // Draw output spectrogram (orange/red)
+    // Difference-based coloring:
+    // - Green/gray: output ≈ input (no change / bypass)
+    // - Red/orange: output > input (plugin adds energy)
+    // - Blue: output < input (plugin removes energy)
     for frame_idx in 0..num_frames {
         let post_frame = &post.waterfall[post.waterfall.len() - num_frames + frame_idx];
+        let pre_frame = &pre.waterfall[pre.waterfall.len() - num_frames + frame_idx];
         let x = rect.left() + frame_idx as f32 * col_width;
 
         for bin_idx in 0..num_display_bins {
             let src_bin = bin_idx * bin_step;
-            if src_bin >= post_frame.len() {
+            if src_bin >= post_frame.len() || src_bin >= pre_frame.len() {
                 continue;
             }
 
             let post_db = post_frame[src_bin];
-            let normalized = ((post_db - post.min_db) / db_range).clamp(0.0, 1.0);
+            let pre_db = pre_frame[src_bin];
+            let post_norm = ((post_db - post.min_db) / db_range).clamp(0.0, 1.0);
+            let pre_norm = ((pre_db - pre.min_db) / db_range).clamp(0.0, 1.0);
 
-            // Orange/red for output
-            let color = egui::Color32::from_rgb(
-                (255.0 * normalized) as u8,
-                (100.0 * normalized) as u8,
-                (20.0 * normalized) as u8,
-            );
+            // Signal level (for brightness) - use max of both
+            let signal_level = post_norm.max(pre_norm);
+
+            // Skip if no significant signal
+            if signal_level < 0.02 {
+                continue;
+            }
+
+            // Difference: positive = output > input, negative = output < input
+            let diff = post_norm - pre_norm;
+
+            // Threshold for "quiet" (no significant signal in input)
+            let quiet_threshold = diff_threshold * 3.0;
+
+            let color = if diff.abs() < diff_threshold {
+                // Unchanged - dark/dim base
+                let brightness = signal_level * unchanged_brightness * 0.3;
+                egui::Color32::from_rgb(
+                    (60.0 * brightness) as u8,
+                    (70.0 * brightness) as u8,
+                    (80.0 * brightness) as u8,
+                )
+            } else if diff > 0.0 {
+                // Output > input
+                if pre_norm < quiet_threshold {
+                    // CREATED - new frequency, bright magenta (pops!)
+                    egui::Color32::from_rgb(
+                        (255.0 * post_norm) as u8,
+                        (40.0 * post_norm) as u8,
+                        (200.0 * post_norm) as u8,
+                    )
+                } else {
+                    // STRENGTHENED - existing frequency amplified, orange
+                    egui::Color32::from_rgb(
+                        (255.0 * signal_level) as u8,
+                        (140.0 * signal_level) as u8,
+                        (30.0 * signal_level) as u8,
+                    )
+                }
+            } else {
+                // Output < input
+                if post_norm < quiet_threshold {
+                    // REMOVED - frequency eliminated, very dark blue
+                    let dim = pre_norm * 0.4;
+                    egui::Color32::from_rgb(
+                        (20.0 * dim) as u8,
+                        (20.0 * dim) as u8,
+                        (80.0 * dim) as u8,
+                    )
+                } else {
+                    // WEAKENED - frequency attenuated, dim cyan
+                    let dim = signal_level * 0.7;
+                    egui::Color32::from_rgb(
+                        (40.0 * dim) as u8,
+                        (120.0 * dim) as u8,
+                        (180.0 * dim) as u8,
+                    )
+                }
+            };
 
             let y = rect.bottom() - (bin_idx as f32 + 1.0) * row_height;
             painter.rect_filled(
@@ -995,43 +1060,6 @@ fn spectrogram_comparison_display(
                 0.0,
                 color,
             );
-        }
-    }
-
-    // Overlay input spectrogram (blue, semi-transparent)
-    for frame_idx in 0..num_frames {
-        let pre_frame = &pre.waterfall[pre.waterfall.len() - num_frames + frame_idx];
-        let x = rect.left() + frame_idx as f32 * col_width;
-
-        for bin_idx in 0..num_display_bins {
-            let src_bin = bin_idx * bin_step;
-            if src_bin >= pre_frame.len() {
-                continue;
-            }
-
-            let pre_db = pre_frame[src_bin];
-            let normalized = ((pre_db - pre.min_db) / db_range).clamp(0.0, 1.0);
-
-            if normalized > 0.1 {
-                // Blue for input, with transparency
-                let alpha = (180.0 * normalized) as u8;
-                let color = egui::Color32::from_rgba_unmultiplied(
-                    (50.0 * normalized) as u8,
-                    (150.0 * normalized) as u8,
-                    (255.0 * normalized) as u8,
-                    alpha,
-                );
-
-                let y = rect.bottom() - (bin_idx as f32 + 1.0) * row_height;
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(x, y),
-                        egui::vec2(col_width + 1.0, row_height + 1.0),
-                    ),
-                    0.0,
-                    color,
-                );
-            }
         }
     }
 }
@@ -1111,10 +1139,13 @@ fn erb_panel(ui: &mut egui::Ui, state: &mut testbench::TestbenchState, is_effect
         // ERB spectrogram display with optional comparison
         if state.show_comparison && is_effect {
             erb_spectrogram_comparison_display(ui, erb, pre_erb);
-            // Legend for comparison mode
+            // Legend for difference-based comparison mode
             ui.horizontal(|ui| {
-                ui.colored_label(egui::Color32::from_rgb(255, 100, 20), "■ Output");
-                ui.colored_label(egui::Color32::from_rgb(50, 150, 255), "■ Input");
+                ui.colored_label(egui::Color32::from_rgb(50, 55, 60), "■ Unchanged");
+                ui.colored_label(egui::Color32::from_rgb(255, 40, 200), "■ Created");
+                ui.colored_label(egui::Color32::from_rgb(255, 140, 30), "■ Strengthened");
+                ui.colored_label(egui::Color32::from_rgb(40, 120, 180), "■ Weakened");
+                ui.colored_label(egui::Color32::from_rgb(20, 20, 80), "■ Removed");
             });
         } else {
             erb_spectrogram_display(ui, erb);
@@ -1130,20 +1161,13 @@ fn erb_panel(ui: &mut egui::Ui, state: &mut testbench::TestbenchState, is_effect
             "{} ERB bands (Gammatone), 20-20k Hz",
             erb.num_bands
         ));
-        if state.show_comparison && is_effect {
-            if erb.show_waterfall {
-                // Spectrogram overlay legend
-                ui.colored_label(egui::Color32::from_rgb(255, 100, 50), "■ Output");
-                ui.colored_label(egui::Color32::from_rgb(50, 100, 255), "■ Input");
-                ui.colored_label(egui::Color32::from_rgb(200, 100, 200), "■ Both");
-            } else {
-                // Bar chart legend
-                ui.colored_label(egui::Color32::from_rgb(255, 150, 50), "■ Output");
-                ui.colored_label(egui::Color32::from_rgb(100, 150, 255), "— Input");
-                ui.colored_label(egui::Color32::from_rgb(255, 200, 50), "■ Added");
-                if state.normalize_to_max {
-                    ui.label("(normalized to max)");
-                }
+        if state.show_comparison && is_effect && !erb.show_waterfall {
+            // Bar chart legend (spectrogram legend is shown inline above)
+            ui.colored_label(egui::Color32::from_rgb(255, 150, 50), "■ Output");
+            ui.colored_label(egui::Color32::from_rgb(100, 150, 255), "— Input");
+            ui.colored_label(egui::Color32::from_rgb(255, 200, 50), "■ Added");
+            if state.normalize_to_max {
+                ui.label("(normalized to max)");
             }
         }
     });
@@ -1373,12 +1397,15 @@ fn erb_spectrogram_display(ui: &mut egui::Ui, erb: &testbench::ErbState) {
     }
 }
 
-/// ERB spectrogram comparison: output (orange/red) with input (blue) overlaid.
+/// ERB spectrogram comparison with difference-based coloring.
 fn erb_spectrogram_comparison_display(
     ui: &mut egui::Ui,
     post_erb: &testbench::ErbState,
     pre_erb: &testbench::ErbState,
 ) {
+    // Tuning constants
+    let unchanged_brightness: f32 = 1.0;
+    let diff_threshold: f32 = 0.01;
     let height = 200.0;
     let (response, painter) = ui.allocate_painter(
         egui::vec2(ui.available_width(), height),
@@ -1406,24 +1433,81 @@ fn erb_spectrogram_comparison_display(
 
     let db_range = post_erb.max_db - post_erb.min_db;
 
-    // Draw output spectrogram (orange/red)
+    // Difference-based coloring
     for frame_idx in 0..num_frames {
         let post_frame = &post_erb.waterfall[post_erb.waterfall.len() - num_frames + frame_idx];
+        let pre_frame = &pre_erb.waterfall[pre_erb.waterfall.len() - num_frames + frame_idx];
         let x = rect.left() + frame_idx as f32 * col_width;
 
         for band_idx in 0..num_bands {
-            if band_idx >= post_frame.len() {
+            if band_idx >= post_frame.len() || band_idx >= pre_frame.len() {
                 continue;
             }
 
             let post_db = post_frame[band_idx];
-            let normalized = ((post_db - post_erb.min_db) / db_range).clamp(0.0, 1.0);
+            let pre_db = pre_frame[band_idx];
+            let post_norm = ((post_db - post_erb.min_db) / db_range).clamp(0.0, 1.0);
+            let pre_norm = ((pre_db - pre_erb.min_db) / db_range).clamp(0.0, 1.0);
 
-            let color = egui::Color32::from_rgb(
-                (255.0 * normalized) as u8,
-                (100.0 * normalized) as u8,
-                (20.0 * normalized) as u8,
-            );
+            // Signal level (for brightness) - use max of both
+            let signal_level = post_norm.max(pre_norm);
+
+            // Skip if no significant signal
+            if signal_level < 0.02 {
+                continue;
+            }
+
+            // Difference: positive = output > input, negative = output < input
+            let diff = post_norm - pre_norm;
+
+            // Threshold for "quiet" (no significant signal in input)
+            let quiet_threshold = diff_threshold * 3.0;
+
+            let color = if diff.abs() < diff_threshold {
+                // Unchanged - dark/dim base
+                let brightness = signal_level * unchanged_brightness * 0.3;
+                egui::Color32::from_rgb(
+                    (60.0 * brightness) as u8,
+                    (70.0 * brightness) as u8,
+                    (80.0 * brightness) as u8,
+                )
+            } else if diff > 0.0 {
+                // Output > input
+                if pre_norm < quiet_threshold {
+                    // CREATED - new frequency, bright magenta (pops!)
+                    egui::Color32::from_rgb(
+                        (255.0 * post_norm) as u8,
+                        (40.0 * post_norm) as u8,
+                        (200.0 * post_norm) as u8,
+                    )
+                } else {
+                    // STRENGTHENED - existing frequency amplified, orange
+                    egui::Color32::from_rgb(
+                        (255.0 * signal_level) as u8,
+                        (140.0 * signal_level) as u8,
+                        (30.0 * signal_level) as u8,
+                    )
+                }
+            } else {
+                // Output < input
+                if post_norm < quiet_threshold {
+                    // REMOVED - frequency eliminated, very dark blue
+                    let dim = pre_norm * 0.4;
+                    egui::Color32::from_rgb(
+                        (20.0 * dim) as u8,
+                        (20.0 * dim) as u8,
+                        (80.0 * dim) as u8,
+                    )
+                } else {
+                    // WEAKENED - frequency attenuated, dim cyan
+                    let dim = signal_level * 0.7;
+                    egui::Color32::from_rgb(
+                        (40.0 * dim) as u8,
+                        (120.0 * dim) as u8,
+                        (180.0 * dim) as u8,
+                    )
+                }
+            };
 
             let y = rect.bottom() - (band_idx as f32 + 1.0) * row_height;
             painter.rect_filled(
@@ -1434,41 +1518,6 @@ fn erb_spectrogram_comparison_display(
                 0.0,
                 color,
             );
-        }
-    }
-
-    // Overlay input spectrogram (blue, semi-transparent)
-    for frame_idx in 0..num_frames {
-        let pre_frame = &pre_erb.waterfall[pre_erb.waterfall.len() - num_frames + frame_idx];
-        let x = rect.left() + frame_idx as f32 * col_width;
-
-        for band_idx in 0..num_bands {
-            if band_idx >= pre_frame.len() {
-                continue;
-            }
-
-            let pre_db = pre_frame[band_idx];
-            let normalized = ((pre_db - pre_erb.min_db) / db_range).clamp(0.0, 1.0);
-
-            if normalized > 0.1 {
-                let alpha = (180.0 * normalized) as u8;
-                let color = egui::Color32::from_rgba_unmultiplied(
-                    (50.0 * normalized) as u8,
-                    (150.0 * normalized) as u8,
-                    (255.0 * normalized) as u8,
-                    alpha,
-                );
-
-                let y = rect.bottom() - (band_idx as f32 + 1.0) * row_height;
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(x, y),
-                        egui::vec2(col_width + 1.0, row_height + 1.0),
-                    ),
-                    0.0,
-                    color,
-                );
-            }
         }
     }
 }
